@@ -6,12 +6,15 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "lint": "oxlint src tests api",
+    "lint": "oxlint src tests api scripts",
     "typecheck": "tsc --noEmit -p tsconfig.app.json && tsc --noEmit -p tsconfig.node.json",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "generate:fixtures": "npx tsx scripts/generate-fixtures.ts",
+    "validate:live": "npx tsx scripts/run-live-validation.ts",
+    "security:audit": "npm audit --audit-level=high"
   },
   "dependencies": {
     "@google/genai": "^2.22.0",

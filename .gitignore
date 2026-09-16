@@ -38,3 +38,9 @@ graphify-out/
 
 # Large test fixtures — keep repo under 10 MB
 tests/fixtures/*.pdf
+
+# Live validation results — local artifacts (hashes committed, raw results not)
+scripts/results/validation-*.json
+
+# tsx cache
+.tsx-cache/
