@@ -16,8 +16,6 @@
  */
 
 import { IncomingMessage, ServerResponse } from 'node:http';
-import Ajv from 'ajv';
-import addFormats from 'ajv-formats';
 import { ANALYSIS_SCHEMA, validateAndSanitize } from '../src/lib/schema.js';
 
 // Minimal Vercel-compatible request/response types (avoids @vercel/node dependency)
@@ -35,7 +33,7 @@ type VercelResponse = ServerResponse & {
 // ---------------------------------------------------------------------------
 
 const MAX_PDF_SIZE_BYTES = 15 * 1024 * 1024; // 15 MB
-const MAX_PDF_PAGES = 200; // application-level limit, not Gemini's limit
+const _MAX_PDF_PAGES = 200; // application-level limit (reserved for future page-count validation)
 const PDF_MAGIC = '%PDF-';
 const GEMINI_MODEL = 'gemini-2.0-flash';
 

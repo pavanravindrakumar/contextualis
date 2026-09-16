@@ -290,7 +290,7 @@ const PDF_MAGIC = '%PDF-';
 export async function validatePdfFile(
   file: File,
   maxSizeMB = 15,
-  maxPages = 200,
+  _maxPages = 200,
 ): Promise<{ valid: true } | { valid: false; reason: string }> {
   // 1. MIME type check
   if (file.type && file.type !== 'application/pdf') {

@@ -33,7 +33,6 @@ import type {
 function makeIndex(rawText: string, scannedPages: number[] = []): DocumentIndex {
   const normalizedFull = normalize(rawText).toLowerCase();
   const charToItem: TextItem[] = [];
-  const items = rawText.split(' ');
 
   let offset = 0;
   const normWords = normalizedFull.split(' ');

@@ -644,7 +644,6 @@ async function runContextValidation(
 ): Promise<ContextRunResult> {
   const sdkVersion = getSdkVersion();
   const schemaVersion = getSchemaVersion();
-  const matcherVersion = getMatcherVersion();
   const nodeVersion = process.version;
 
   console.log(`\n  📤 Run: ${runId} | ${role} / ${concern}`);
