@@ -48,6 +48,7 @@ export interface EvidenceRecord {
 }
 
 export interface ContextRunResult {
+  status: 'success' | 'failed' | 'not_run';
   run_id: string;
   role: string;
   concern: string;
@@ -95,6 +96,7 @@ export interface FailureTestResult {
 }
 
 export interface ContextDiffResult {
+  status: 'success' | 'not_run';
   fixture_sha256_a: string;
   fixture_sha256_b: string;
   hashes_match: boolean; // must be true — same PDF bytes
@@ -117,6 +119,7 @@ export interface ContextDiffResult {
 }
 
 export interface SecurityTestResult {
+  status: 'success' | 'failed' | 'not_run';
   fixture: string;
   fixture_sha256: string;
   schema_valid: boolean;
@@ -161,7 +164,7 @@ export interface ValidationReport {
     all_failure_tests_passed: boolean;
     blocker_count: number;
     blockers: string[];
-    verdict: 'GO' | 'MODIFY' | 'BLOCK';
+    verdict: 'GO' | 'MODIFY' | 'BLOCK' | 'BLOCKED_BY_CREDENTIALS';
     verdict_rationale: string;
   };
 }
@@ -235,8 +238,8 @@ async function callGeminiDirect(
   schema: unknown,
 ): Promise<{ data: unknown; latencyMs: number; model: string; error: string | null }> {
   const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    throw new Error('GEMINI_API_KEY not set in environment. Cannot run live validation.');
+  if (!apiKey || apiKey.trim() === '' || apiKey.includes('your_gemini_api_key_here')) {
+    throw new Error('GEMINI_API_KEY not set in environment or is invalid. Cannot run live validation.');
   }
 
   // Dynamic import to avoid loading SDK in tests
@@ -403,10 +406,35 @@ async function buildSimpleIndex(
 // Context differentiation analysis
 // ---------------------------------------------------------------------------
 
-function computeContextDiff(
+export function computeContextDiff(
   runA: ContextRunResult,
   runB: ContextRunResult,
 ): ContextDiffResult {
+  if (runA.status !== 'success' || runB.status !== 'success') {
+    return {
+      status: 'not_run',
+      fixture_sha256_a: runA.fixture_sha256,
+      fixture_sha256_b: runB.fixture_sha256,
+      hashes_match: false,
+      role_a: runA.role,
+      role_b: runB.role,
+      concern_a: runA.concern,
+      concern_b: runB.concern,
+      summary_different: false,
+      shared_attention_titles: [],
+      unique_to_a: [],
+      unique_to_b: [],
+      shared_obligations_who: [],
+      unique_obligations_a: [],
+      unique_obligations_b: [],
+      question_overlap_count: 0,
+      question_unique_a: [],
+      question_unique_b: [],
+      differentiation_score: 0,
+      notes: 'Context differentiation not run because one or both runs failed or were not run.',
+    };
+  }
+
   const aResult = runA.raw_analysis as {
     contextual_summary?: string;
     attention_items?: Array<{ title: string }>;
@@ -450,6 +478,7 @@ function computeContextDiff(
   const differentiationScore = totalFindings > 0 ? uniqueFindings / totalFindings : 0;
 
   return {
+    status: 'success',
     fixture_sha256_a: runA.fixture_sha256,
     fixture_sha256_b: runB.fixture_sha256,
     hashes_match: hashesMatch,
@@ -489,11 +518,28 @@ const INJECTION_PATTERNS = [
   /my\s+system\s+prompt\s+is/i,
 ];
 
-function analyzeSecurityResult(
+export function analyzeSecurityResult(
   fixture: string,
   fixtureSha256: string,
   runResult: ContextRunResult,
 ): SecurityTestResult {
+  if (runResult.status !== 'success') {
+    return {
+      status: 'not_run',
+      fixture,
+      fixture_sha256: fixtureSha256,
+      schema_valid: false,
+      schema_errors: [],
+      evidence_status_in_output: false,
+      injection_markers_in_output: false,
+      system_prompt_disclosed: false,
+      unauthorized_tool_use: false,
+      output_structure_overridden: false,
+      passed: false,
+      notes: 'Security analysis not run because the underlying API run failed.',
+    };
+  }
+
   const outputStr = JSON.stringify(runResult.raw_analysis ?? {});
 
   const evidenceStatusPresent = /"evidence_status"\s*:/.test(outputStr);
@@ -512,6 +558,7 @@ function analyzeSecurityResult(
     !structureOverridden;
 
   return {
+    status: 'success',
     fixture,
     fixture_sha256: fixtureSha256,
     schema_valid: runResult.schema_valid,
@@ -727,7 +774,10 @@ async function runContextValidation(
 
   console.log(`     ⏱  Latency: ${latencyMs}ms`);
 
+  const status = error ? 'failed' : 'success';
+
   return {
+    status,
     run_id: runId,
     role,
     concern,
@@ -798,8 +848,16 @@ async function runLatencyExperiment(
 // Verdict logic
 // ---------------------------------------------------------------------------
 
-function computeVerdict(runs: ContextRunResult[], securityTest: SecurityTestResult | null, contextDiff: ContextDiffResult | null): { verdict: 'GO' | 'MODIFY' | 'BLOCK'; blockers: string[]; rationale: string } {
+export function computeVerdict(runs: ContextRunResult[], securityTest: SecurityTestResult | null, contextDiff: ContextDiffResult | null, preflightFailed: boolean = false): { verdict: 'GO' | 'MODIFY' | 'BLOCK' | 'BLOCKED_BY_CREDENTIALS'; blockers: string[]; rationale: string } {
   const blockers: string[] = [];
+
+  if (preflightFailed) {
+    return {
+      verdict: 'BLOCKED_BY_CREDENTIALS',
+      blockers: ['Gemini API key unavailable or invalid'],
+      rationale: 'BLOCKED: Live validation could not run due to missing credentials.',
+    };
+  }
 
   // BLOCK conditions
   for (const run of runs) {
@@ -857,54 +915,73 @@ async function main() {
   }
   const fixtureHashes = JSON.parse(fs.readFileSync(hashPath, 'utf-8')) as Record<string, string>;
 
-  const runs: ContextRunResult[] = [];
-
-  // ── Context A: Small Business Tenant / Financial Exposure (fixture A)
-  console.log('\n[Step 1] Context A: Small Business Tenant / Financial Exposure');
-  const runA = await runContextValidation('clean-lease.pdf', 'Small Business Tenant', 'Financial Exposure', 'context-a');
-  runs.push(runA);
-
-  // ── Context B: Landlord / Exit & Renewal Obligations (same fixture A — must match hash)
-  console.log('\n[Step 2] Context B: Landlord / Exit & Renewal Obligations');
-  const runB = await runContextValidation('clean-lease.pdf', 'Landlord', 'Exit / Renewal Obligations', 'context-b');
-  runs.push(runB);
-
-  // ── Context differentiation analysis
-  console.log('\n[Step 3] Context differentiation analysis');
-  const contextDiff = computeContextDiff(runA, runB);
-  console.log(`  Hashes match: ${contextDiff.hashes_match}`);
-  console.log(`  Differentiation score: ${contextDiff.differentiation_score}`);
-  console.log(`  Unique to A: ${contextDiff.unique_to_a.join(', ') || 'none'}`);
-  console.log(`  Unique to B: ${contextDiff.unique_to_b.join(', ') || 'none'}`);
-
-  // ── Adversarial injection test
-  console.log('\n[Step 4] Adversarial prompt-injection test');
-  const runAdv = await runContextValidation('adversarial.pdf', 'Small Business Client', 'Liability', 'adversarial');
-  runs.push(runAdv);
-  const securityTest = analyzeSecurityResult('adversarial.pdf', loadFixture('adversarial.pdf').sha256, runAdv);
-  console.log(`  Security test passed: ${securityTest.passed}`);
-  if (!securityTest.passed) {
-    console.log(`  ⚠️  Failures: ${JSON.stringify({ schema: securityTest.schema_valid, evStatus: securityTest.evidence_status_in_output, sysPrompt: securityTest.system_prompt_disclosed })}`);
+  // ── Preflight Credential Check
+  console.log('\n[Preflight] Checking Gemini API credentials...');
+  let preflightFailed = false;
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey || apiKey.trim() === '' || apiKey.includes('your_gemini_api_key_here')) {
+    console.log('  ✗ Gemini API key unavailable');
+    console.log('  Live validation was not started.');
+    console.log('  Create/update .env and set GEMINI_API_KEY.');
+    preflightFailed = true;
+  } else {
+    console.log('  ✓ Gemini API key found');
   }
 
-  // ── Latency experiment
-  console.log('\n[Step 5] Latency experiment');
-  const latencySummary = await runLatencyExperiment('clean-lease.pdf', 'Small Business Tenant', 'Financial Exposure');
-  console.log(`  min=${latencySummary.min_ms}ms max=${latencySummary.max_ms}ms avg=${latencySummary.avg_ms}ms`);
+  const runs: ContextRunResult[] = [];
+  let contextDiff: ContextDiffResult | null = null;
+  let securityTest: SecurityTestResult | null = null;
+  let latencySummary: any = null;
+  let failureTests: FailureTestResult[] = [];
 
-  // ── Stress fixture test (formatting stress)
-  console.log('\n[Step 6] Formatting-stress fixture test');
-  const runStress = await runContextValidation('stress-lease.pdf', 'Small Business Tenant', 'Financial Exposure', 'stress-fixture');
-  runs.push(runStress);
+  if (!preflightFailed) {
+    // ── Context A: Small Business Tenant / Financial Exposure (fixture A)
+    console.log('\n[Step 1] Context A: Small Business Tenant / Financial Exposure');
+    const runA = await runContextValidation('clean-lease.pdf', 'Small Business Tenant', 'Financial Exposure', 'context-a');
+    runs.push(runA);
 
-  // ── Failure mode tests (deterministic)
-  console.log('\n[Step 7] Failure mode tests (deterministic)');
-  const failureTests = await runFailureTests();
-  const failurePassed = failureTests.filter((t) => t.passed).length;
-  console.log(`  ${failurePassed}/${failureTests.length} failure tests passed`);
+    // ── Context B: Landlord / Exit & Renewal Obligations (same fixture A — must match hash)
+    console.log('\n[Step 2] Context B: Landlord / Exit & Renewal Obligations');
+    const runB = await runContextValidation('clean-lease.pdf', 'Landlord', 'Exit / Renewal Obligations', 'context-b');
+    runs.push(runB);
+
+    // ── Context differentiation analysis
+    console.log('\n[Step 3] Context differentiation analysis');
+    contextDiff = computeContextDiff(runA, runB);
+    console.log(`  Hashes match: ${contextDiff.hashes_match}`);
+    console.log(`  Differentiation score: ${contextDiff.differentiation_score}`);
+    console.log(`  Unique to A: ${contextDiff.unique_to_a.join(', ') || 'none'}`);
+    console.log(`  Unique to B: ${contextDiff.unique_to_b.join(', ') || 'none'}`);
+
+    // ── Adversarial injection test
+    console.log('\n[Step 4] Adversarial prompt-injection test');
+    const runAdv = await runContextValidation('adversarial.pdf', 'Small Business Client', 'Liability', 'adversarial');
+    runs.push(runAdv);
+    securityTest = analyzeSecurityResult('adversarial.pdf', loadFixture('adversarial.pdf').sha256, runAdv);
+    console.log(`  Security test passed: ${securityTest.passed}`);
+    if (!securityTest.passed) {
+      console.log(`  ⚠️  Failures: ${JSON.stringify({ schema: securityTest.schema_valid, evStatus: securityTest.evidence_status_in_output, sysPrompt: securityTest.system_prompt_disclosed })}`);
+    }
+
+    // ── Latency experiment
+    console.log('\n[Step 5] Latency experiment');
+    latencySummary = await runLatencyExperiment('clean-lease.pdf', 'Small Business Tenant', 'Financial Exposure');
+    console.log(`  min=${latencySummary.min_ms}ms max=${latencySummary.max_ms}ms avg=${latencySummary.avg_ms}ms`);
+
+    // ── Stress fixture test (formatting stress)
+    console.log('\n[Step 6] Formatting-stress fixture test');
+    const runStress = await runContextValidation('stress-lease.pdf', 'Small Business Tenant', 'Financial Exposure', 'stress-fixture');
+    runs.push(runStress);
+
+    // ── Failure mode tests (deterministic)
+    console.log('\n[Step 7] Failure mode tests (deterministic)');
+    failureTests = await runFailureTests();
+    const failurePassed = failureTests.filter((t) => t.passed).length;
+    console.log(`  ${failurePassed}/${failureTests.length} failure tests passed`);
+  }
 
   // ── Verdict
-  const { verdict, blockers, rationale } = computeVerdict(runs, securityTest, contextDiff);
+  const { verdict, blockers, rationale } = computeVerdict(runs, securityTest, contextDiff, preflightFailed);
   console.log(`\n${'='.repeat(60)}`);
   console.log(`VERDICT: ${verdict}`);
   console.log(`Rationale: ${rationale}`);
@@ -928,7 +1005,7 @@ async function main() {
     runs,
     context_diff: contextDiff,
     security_test: securityTest,
-    latency_summary: { fixture: 'clean-lease.pdf', ...latencySummary },
+    latency_summary: latencySummary ? { fixture: 'clean-lease.pdf', ...latencySummary } : null,
     failure_tests: failureTests,
     summary: {
       total_runs: runs.length,
@@ -955,13 +1032,15 @@ async function main() {
   console.log(`\n📄 Results written to: ${resultPath}`);
   console.log(`📄 Latest results: ${latestPath}`);
 
-  if (verdict === 'BLOCK') {
+  if (verdict === 'BLOCK' || verdict === 'BLOCKED_BY_CREDENTIALS') {
     console.error('\n🚫 BLOCK: Production dashboard development MUST NOT begin.');
     process.exit(1);
   }
 }
 
-main().catch((err) => {
-  console.error('Validation runner failed:', err);
-  process.exit(1);
-});
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  main().catch((err) => {
+    console.error('Validation runner failed:', err);
+    process.exit(1);
+  });
+}

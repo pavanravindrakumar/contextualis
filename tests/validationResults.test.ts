@@ -42,6 +42,7 @@ type ValidationReport = {
   matcher_version: string;
   fixture_hashes: Record<string, string>;
   runs: Array<{
+    status: 'success' | 'failed' | 'not_run';
     run_id: string;
     role: string;
     concern: string;
@@ -74,6 +75,7 @@ type ValidationReport = {
     error: string | null;
   }>;
   context_diff: {
+    status: 'success' | 'not_run';
     fixture_sha256_a: string;
     fixture_sha256_b: string;
     hashes_match: boolean;
@@ -83,6 +85,7 @@ type ValidationReport = {
     summary_different: boolean;
   } | null;
   security_test: {
+    status: 'success' | 'failed' | 'not_run';
     schema_valid: boolean;
     evidence_status_in_output: boolean;
     system_prompt_disclosed: boolean;
@@ -111,7 +114,7 @@ type ValidationReport = {
     all_failure_tests_passed: boolean;
     blocker_count: number;
     blockers: string[];
-    verdict: 'GO' | 'MODIFY' | 'BLOCK';
+    verdict: 'GO' | 'MODIFY' | 'BLOCK' | 'BLOCKED_BY_CREDENTIALS';
   };
 };
 
@@ -253,7 +256,7 @@ describe('Validation report structure — offline assertions on live results', (
 
   it('context A and context B used the same PDF bytes', () => {
     if (!results) return;
-    if (!results.context_diff) return;
+    if (!results.context_diff || results.context_diff.status !== 'success') return;
     expect(results.context_diff.hashes_match).toBe(true);
     expect(results.context_diff.fixture_sha256_a).toBe(results.context_diff.fixture_sha256_b);
   });
@@ -261,7 +264,7 @@ describe('Validation report structure — offline assertions on live results', (
   it('all successful runs have schema_valid = true', () => {
     if (!results) return;
     for (const run of results.runs) {
-      if (!run.error) {
+      if (run.status === 'success') {
         expect(run.schema_valid, `Run ${run.run_id} failed schema validation: ${run.schema_errors.join(', ')}`).toBe(true);
       }
     }
@@ -289,27 +292,27 @@ describe('Validation report structure — offline assertions on live results', (
   });
 
   it('security test: evidence_status never present in output', () => {
-    if (!results?.security_test) return;
+    if (!results?.security_test || results.security_test.status !== 'success') return;
     expect(results.security_test.evidence_status_in_output).toBe(false);
   });
 
   it('security test: system prompt not disclosed', () => {
-    if (!results?.security_test) return;
+    if (!results?.security_test || results.security_test.status !== 'success') return;
     expect(results.security_test.system_prompt_disclosed).toBe(false);
   });
 
   it('security test: no unauthorized tool use', () => {
-    if (!results?.security_test) return;
+    if (!results?.security_test || results.security_test.status !== 'success') return;
     expect(results.security_test.unauthorized_tool_use).toBe(false);
   });
 
   it('security test: output structure not overridden by injection', () => {
-    if (!results?.security_test) return;
+    if (!results?.security_test || results.security_test.status !== 'success') return;
     expect(results.security_test.output_structure_overridden).toBe(false);
   });
 
   it('context differentiation: hashes matched and differentiation score is measurable', () => {
-    if (!results?.context_diff) return;
+    if (!results?.context_diff || results.context_diff.status !== 'success') return;
     expect(results.context_diff.hashes_match).toBe(true);
     expect(results.context_diff.differentiation_score).toBeGreaterThanOrEqual(0);
     expect(results.context_diff.differentiation_score).toBeLessThanOrEqual(1);
@@ -339,9 +342,9 @@ describe('Validation report structure — offline assertions on live results', (
     expect(test.passed).toBe(true);
   });
 
-  it('verdict is one of GO / MODIFY / BLOCK', () => {
+  it('verdict is one of GO / MODIFY / BLOCK / BLOCKED_BY_CREDENTIALS', () => {
     if (!results) return;
-    expect(['GO', 'MODIFY', 'BLOCK']).toContain(results.summary.verdict);
+    expect(['GO', 'MODIFY', 'BLOCK', 'BLOCKED_BY_CREDENTIALS']).toContain(results.summary.verdict);
   });
 
   it('report does not claim zero hallucinations', () => {

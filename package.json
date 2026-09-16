@@ -13,7 +13,7 @@
     "test:coverage": "vitest run --coverage",
     "preview": "vite preview",
     "generate:fixtures": "npx tsx scripts/generate-fixtures.ts",
-    "validate:live": "npx tsx scripts/run-live-validation.ts",
+    "validate:live": "npx tsx --env-file=.env scripts/run-live-validation.ts",
     "security:audit": "npm audit --audit-level=high"
   },
   "dependencies": {
