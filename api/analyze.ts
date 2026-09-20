@@ -16,6 +16,7 @@
  */
 
 import { IncomingMessage, ServerResponse } from 'node:http';
+import { GoogleGenAI } from '@google/genai';
 import { ANALYSIS_SCHEMA, validateAndSanitize } from '../src/lib/schema.js';
 
 // Minimal Vercel-compatible request/response types (avoids @vercel/node dependency)
@@ -51,7 +52,6 @@ function getGeminiClient() {
   if (customGeminiClient) {
     return customGeminiClient;
   }
-  const { GoogleGenAI } = require('@google/genai');
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     throw new Error('GEMINI_API_KEY environment variable is not set');

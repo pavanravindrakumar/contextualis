@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { GoogleGenAI } from '@google/genai';
 import handler, { setGeminiClientForTesting, classifyGeminiError } from '../api/analyze';
 
 describe('api/analyze.ts — Server-Side Gemini Error Semantics & Classification', () => {
@@ -389,5 +390,33 @@ describe('api/analyze.ts — Server-Side Gemini Error Semantics & Classification
     expect(bodyStr).not.toContain('generativelanguage.googleapis.com');
     expect(bodyStr).not.toContain('/internal/sdk/');
     expect(bodyStr).not.toContain('stack');
+  });
+
+  // -------------------------------------------------------------------------
+  // K. GoogleGenAI ESM instantiation when custom client is not provided
+  // -------------------------------------------------------------------------
+  it('K. instantiates GoogleGenAI with server-side API key when customGeminiClient is null', async () => {
+    const createMock = vi.fn().mockResolvedValue({
+      output_text: JSON.stringify(VALID_ANALYSIS),
+    });
+    const spy = vi.spyOn(GoogleGenAI.prototype, 'interactions', 'get').mockReturnValue({
+      create: createMock,
+    } as any);
+
+    const { req, res, getStatus, getBody } = createMockReqRes({
+      pdfBase64: VALID_PDF_B64,
+      role: 'Tenant',
+      concern: 'Financial Exposure',
+    });
+
+    await handler(req, res);
+
+    expect(spy).toHaveBeenCalled();
+    expect(createMock).toHaveBeenCalledTimes(1);
+    expect(getStatus()).toBe(200);
+    expect(getBody().mock).toBe(false);
+    expect(getBody().analysis.document_type).toBe('Commercial Lease Agreement');
+
+    spy.mockRestore();
   });
 });
