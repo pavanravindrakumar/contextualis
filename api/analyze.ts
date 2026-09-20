@@ -56,7 +56,10 @@ function getGeminiClient() {
   if (!apiKey) {
     throw new Error('GEMINI_API_KEY environment variable is not set');
   }
-  return new GoogleGenAI({ apiKey });
+  return new GoogleGenAI({
+    apiKey,
+    httpOptions: { retryOptions: { attempts: 1 } }
+  });
 }
 
 export interface ClassifiedError {
@@ -239,6 +242,7 @@ async function callGemini(
         mime_type: 'application/json',
         schema: ANALYSIS_SCHEMA as Record<string, unknown>,
       },
+      thinkingConfig: { thinkingLevel: 'minimal' },
       store: false, // explicitly disable state storage per requirements
     });
 
@@ -308,6 +312,7 @@ Return only valid JSON matching the schema. Do not include evidence_status.`;
         mime_type: 'application/json',
         schema: ANALYSIS_SCHEMA as Record<string, unknown>,
       },
+      thinkingConfig: { thinkingLevel: 'minimal' },
       store: false,
     });
 

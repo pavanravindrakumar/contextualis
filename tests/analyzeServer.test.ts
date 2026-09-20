@@ -417,6 +417,12 @@ describe('api/analyze.ts — Server-Side Gemini Error Semantics & Classification
     expect(getBody().mock).toBe(false);
     expect(getBody().analysis.document_type).toBe('Commercial Lease Agreement');
 
+    // Verify model selection and thinking configuration
+    const callArgs = createMock.mock.calls[0][0];
+    expect(callArgs.model).toBe('gemini-3.5-flash-lite');
+    expect(callArgs.thinkingConfig).toEqual({ thinkingLevel: 'minimal' });
+
     spy.mockRestore();
   });
+
 });
