@@ -242,7 +242,7 @@ async function callGemini(
         mime_type: 'application/json',
         schema: ANALYSIS_SCHEMA as Record<string, unknown>,
       },
-      generationConfig: { thinkingLevel: 'minimal' },
+      generation_config: { thinking_level: 'minimal' },
       store: false, // explicitly disable state storage per requirements
     });
 
@@ -312,7 +312,7 @@ Return only valid JSON matching the schema. Do not include evidence_status.`;
         mime_type: 'application/json',
         schema: ANALYSIS_SCHEMA as Record<string, unknown>,
       },
-      generationConfig: { thinkingLevel: 'minimal' },
+      generation_config: { thinking_level: 'minimal' },
       store: false,
     });
 
