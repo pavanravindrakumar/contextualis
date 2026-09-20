@@ -30,11 +30,22 @@ interface PdfJsTextItem {
 // ---------------------------------------------------------------------------
 
 /**
- * If a page has fewer than this many characters per unit of visible area,
- * we treat it as a scanned page (no reliable text layer).
- * Tune this value based on real PDF testing.
+ * Page classification categories:
+ * - TEXT_EXTRACTABLE: Normal typed document text density (e.g. 1,000-4,500 chars on Letter/A4).
+ * - LOW_TEXT_DENSITY: Low-density extractable text (e.g. signature blocks, inventory tables, schedules).
+ * - SCANNED_NO_TEXT: Genuinely empty page or stray OCR noise with no usable text.
  */
-export const SCANNED_CHAR_DENSITY_THRESHOLD = 0.05;
+export type PageClassification =
+  | 'TEXT_EXTRACTABLE'
+  | 'LOW_TEXT_DENSITY'
+  | 'SCANNED_NO_TEXT';
+
+/**
+ * Density threshold below which a page is considered to have low text density.
+ * A typical Letter/A4 typed page (500,000 pt^2) has 1,000-4,500 chars (density 0.002-0.009).
+ * 0.0005 corresponds to ~250 characters on an entire page.
+ */
+export const SCANNED_CHAR_DENSITY_THRESHOLD = 0.0005;
 
 /**
  * A line that appears in the top/bottom of more than this fraction of pages
@@ -54,28 +65,60 @@ export interface PageExtractionResult {
   normalizedText: string;
   /** Whether this page appears to be scanned (no useful text layer) */
   isScanned: boolean;
+  /** Tripartite classification of the page's text layer */
+  classification: PageClassification;
 }
 
 // ---------------------------------------------------------------------------
-// Scanned page detection
+// Scanned page detection & classification
 // ---------------------------------------------------------------------------
 
 /**
+ * Classify a page's text layer truthfully:
+ * - SCANNED_NO_TEXT: genuinely no extractable text or stray OCR noise (< 0.00005 density or < 20 chars).
+ * - LOW_TEXT_DENSITY: usable extractable text present, but lower density (< 0.0008 density) (e.g. signature pages, inventory tables).
+ * - TEXT_EXTRACTABLE: normal text-bearing page with typical document text density.
+ */
+export function classifyPageText(
+  items: PdfJsTextItem[],
+  pageWidth: number,
+  pageHeight: number,
+): PageClassification {
+  const totalChars = items.reduce((sum, item) => sum + (item.str?.length ?? 0), 0);
+  const nonWsChars = items.reduce((sum, item) => sum + (item.str?.trim().length ?? 0), 0);
+  const area = pageWidth * pageHeight;
+  if (area === 0 || nonWsChars === 0) {
+    return 'SCANNED_NO_TEXT';
+  }
+
+  const density = totalChars / area;
+
+  // Truly negligible characters (< 20 chars, e.g. stray OCR speckle on a scanned page)
+  // or density < 0.00005 indicates image-only/scanned with noise
+  if (nonWsChars < 20 || density < 0.00005) {
+    return 'SCANNED_NO_TEXT';
+  }
+
+  // Low-density text page (e.g. signature blocks, brief tables, short annexures)
+  // has usable text, but density is below normal typed page threshold (0.0005)
+  if (density < SCANNED_CHAR_DENSITY_THRESHOLD) {
+    return 'LOW_TEXT_DENSITY';
+  }
+
+  // Normal typed document page
+  return 'TEXT_EXTRACTABLE';
+}
+
+/**
  * Determine if a page is likely scanned (no usable text layer).
- *
- * Heuristic: if total extracted characters divided by the page area is below
- * the threshold, the page is likely scanned or image-only.
+ * Returns true ONLY when text is genuinely unavailable for evidence purposes (SCANNED_NO_TEXT).
  */
 export function isLikelyScanned(
   items: PdfJsTextItem[],
   pageWidth: number,
   pageHeight: number,
 ): boolean {
-  const totalChars = items.reduce((sum, item) => sum + (item.str?.length ?? 0), 0);
-  const area = pageWidth * pageHeight;
-  if (area === 0) return true;
-  const density = totalChars / area;
-  return density < SCANNED_CHAR_DENSITY_THRESHOLD;
+  return classifyPageText(items, pageWidth, pageHeight) === 'SCANNED_NO_TEXT';
 }
 
 // ---------------------------------------------------------------------------
@@ -156,16 +199,17 @@ async function extractPage(
     (item): item is PdfJsTextItem => typeof item === 'object' && item !== null && 'str' in item,
   );
 
-  const scanned = isLikelyScanned(
+  const classification = classifyPageText(
     rawItems,
     viewport.width,
     viewport.height,
   );
+  const scanned = classification === 'SCANNED_NO_TEXT';
 
-  // Convert to our TextItem format
+  // Convert to our TextItem format with unique item IDs
   const items: TextItem[] = rawItems
     .filter((item) => item.str.trim().length > 0)
-    .map((item) => {
+    .map((item, itemIdx) => {
       // PDF.js transform: [scaleX, skewX, skewY, scaleY, translateX, translateY]
       const transform = item.transform;
       const x = transform[4];
@@ -173,6 +217,7 @@ async function extractPage(
       const w = item.width ?? 0;
       const h = item.height ?? 10;
       return {
+        id: `p${pageIndex}_i${itemIdx}`,
         text: normalize(item.str),
         page: pageIndex,
         bbox: [x, y, w, h] as [number, number, number, number],
@@ -182,7 +227,7 @@ async function extractPage(
 
   const normalizedText = items.map((i) => i.text).join(' ');
 
-  return { pageIndex, items, normalizedText, isScanned: scanned };
+  return { pageIndex, items, normalizedText, isScanned: scanned, classification };
 }
 
 // ---------------------------------------------------------------------------
@@ -191,9 +236,9 @@ async function extractPage(
 
 /**
  * Build the reverse index: for every character in the concatenated
- * normalized document text, which TextItem produced it.
+ * normalized document text, which TextItem produced it and at what char offset.
  *
- * This allows us to map a match offset → page + bounding box.
+ * This allows us to map a match offset → page + bounding box with character-level precision.
  */
 export function buildReverseIndex(
   pages: PageExtractionResult[],
@@ -211,11 +256,11 @@ export function buildReverseIndex(
       // Add separator space if needed
       if (normalizedText.length > 0 && !normalizedText.endsWith(' ')) {
         normalizedText += ' ';
-        charToItem.push(item);
+        charToItem.push({ ...item, charOffset: -1 });
       }
       normalizedText += text;
       for (let i = 0; i < text.length; i++) {
-        charToItem.push(item);
+        charToItem.push({ ...item, charOffset: i });
       }
     }
 
@@ -226,6 +271,7 @@ export function buildReverseIndex(
         text: ' ',
         page: page.pageIndex,
         bbox: [0, 0, 0, 0],
+        charOffset: -1,
       });
     }
   }
@@ -262,7 +308,7 @@ export async function extractDocumentIndex(
   // Build reverse index
   const { normalizedText, charToItem } = buildReverseIndex(pages, excludedLines);
 
-  // Collect scanned pages
+  // Collect scanned pages (genuinely unextractable pages only)
   const scannedPages = new Set<number>(
     pages.filter((p) => p.isScanned).map((p) => p.pageIndex),
   );
@@ -272,6 +318,7 @@ export async function extractDocumentIndex(
     charToItem,
     scannedPages,
     pageCount,
+    pageClassifications: pages.map((p) => p.classification),
   };
 }
 
@@ -289,7 +336,7 @@ const PDF_MAGIC = '%PDF-';
  */
 export async function validatePdfFile(
   file: File,
-  maxSizeMB = 15,
+  maxSizeMB = 3,
   _maxPages = 200,
 ): Promise<{ valid: true } | { valid: false; reason: string }> {
   // 1. MIME type check
@@ -307,7 +354,7 @@ export async function validatePdfFile(
   if (file.size > maxBytes) {
     return {
       valid: false,
-      reason: `File exceeds ${maxSizeMB} MB limit (got ${(file.size / 1024 / 1024).toFixed(1)} MB)`,
+      reason: `PDF exceeds size limit of ${maxSizeMB} MB`,
     };
   }
 

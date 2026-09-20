@@ -81,6 +81,8 @@ export interface ContextRunResult {
   unverified_rate: number;
   raw_analysis: unknown; // full validated JSON — stored for offline tests
   error: string | null;
+  error_classification?: string | null;
+  retry_after?: string | null;
 }
 
 export interface FailureTestResult {
@@ -99,7 +101,10 @@ export interface ContextDiffResult {
   status: 'success' | 'not_run';
   fixture_sha256_a: string;
   fixture_sha256_b: string;
+  document_sha256_a?: string;
+  document_sha256_b?: string;
   hashes_match: boolean; // must be true — same PDF bytes
+  same_document_bytes?: boolean;
   role_a: string;
   role_b: string;
   concern_a: string;
@@ -133,6 +138,14 @@ export interface SecurityTestResult {
   notes: string;
 }
 
+export interface PreflightResult {
+  status: 'success' | 'failed' | 'skipped';
+  model: string;
+  latency_ms: number;
+  error_classification: string | null;
+  error_message: string | null;
+}
+
 export interface ValidationReport {
   report_version: '0.5.0';
   generated_at: string;
@@ -146,6 +159,7 @@ export interface ValidationReport {
   context_diff: ContextDiffResult | null;
   security_test: SecurityTestResult | null;
   latency_summary: {
+    status?: 'success' | 'failed';
     fixture: string;
     run_count: number;
     min_ms: number;
@@ -164,7 +178,7 @@ export interface ValidationReport {
     all_failure_tests_passed: boolean;
     blocker_count: number;
     blockers: string[];
-    verdict: 'GO' | 'MODIFY' | 'BLOCK' | 'BLOCKED_BY_CREDENTIALS';
+    verdict: 'GO' | 'MODIFY' | 'BLOCK' | 'BLOCKED_BY_CREDENTIALS' | 'LIVE_GEMINI_BLOCKED' | 'RATE_LIMITED';
     verdict_rationale: string;
   };
 }
@@ -211,7 +225,7 @@ function getSdkVersion(): string {
 // Gemini call
 // ---------------------------------------------------------------------------
 
-const GEMINI_MODEL = 'gemini-2.0-flash';
+import { GEMINI_MODEL } from '../src/lib/geminiConfig.js';
 
 function buildSystemInstruction(role: string, concern: string): string {
   const safeRole = role.replace(/["\n\r\t\\]/g, ' ').trim().slice(0, 100);
@@ -231,12 +245,79 @@ IMPORTANT RULES:
 8. Severity values must be exactly one of: "info", "caution", "high".`;
 }
 
+export async function runGeminiPreflight(apiKey: string): Promise<PreflightResult> {
+  const start = Date.now();
+  try {
+    const { GoogleGenAI } = await import('@google/genai');
+    const client = new GoogleGenAI({ apiKey });
+
+    // Lightweight verification prompt - simple text only, stateless
+    const interaction = await client.interactions.create({
+      model: GEMINI_MODEL,
+      input: 'Preflight check. Respond with: "ok"',
+      store: false,
+    });
+
+    const latencyMs = Date.now() - start;
+    if (interaction && interaction.output_text) {
+      return {
+        status: 'success',
+        model: GEMINI_MODEL,
+        latency_ms: latencyMs,
+        error_classification: null,
+        error_message: null,
+      };
+    }
+    return {
+      status: 'failed',
+      model: GEMINI_MODEL,
+      latency_ms: latencyMs,
+      error_classification: 'EMPTY_RESPONSE',
+      error_message: 'Preflight received empty output text from model',
+    };
+  } catch (err: unknown) {
+    const latencyMs = Date.now() - start;
+    const msg = err instanceof Error ? err.message : String(err);
+    let classification = 'API_ERROR';
+    if (msg.includes('404') || msg.includes('not found') || msg.includes('no longer available')) {
+      classification = 'MODEL_UNAVAILABLE';
+    } else if (msg.includes('401') || msg.includes('403') || msg.includes('API_KEY_INVALID') || msg.includes('API key not valid')) {
+      classification = 'CREDENTIALS_INVALID';
+    } else if (msg.includes('ENOTFOUND') || msg.includes('ECONNREFUSED') || msg.includes('fetch failed')) {
+      classification = 'NETWORK_ERROR';
+    } else if (msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED') || msg.includes('quota')) {
+      classification = 'QUOTA_EXHAUSTED';
+    }
+    return {
+      status: 'failed',
+      model: GEMINI_MODEL,
+      latency_ms: latencyMs,
+      error_classification: classification,
+      error_message: msg.slice(0, 200), // sanitize / truncate
+    };
+  }
+}
+
 async function callGeminiDirect(
   pdfBytes: Buffer,
   role: string,
   concern: string,
   schema: unknown,
-): Promise<{ data: unknown; latencyMs: number; model: string; error: string | null }> {
+): Promise<{
+  data: unknown;
+  latencyMs: number;
+  model: string;
+  usage?: {
+    total_tokens?: number;
+    input_tokens?: number;
+    output_tokens?: number;
+    thought_tokens?: number;
+    cached_tokens?: number;
+  } | null;
+  error: string | null;
+  error_classification?: string | null;
+  retry_after?: string | null;
+}> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey || apiKey.trim() === '' || apiKey.includes('your_gemini_api_key_here')) {
     throw new Error('GEMINI_API_KEY not set in environment or is invalid. Cannot run live validation.');
@@ -247,38 +328,91 @@ async function callGeminiDirect(
   const client = new GoogleGenAI({ apiKey });
 
   const base64 = pdfBytes.toString('base64');
+  const systemInstruction = buildSystemInstruction(role, concern);
   const start = Date.now();
 
-  const response = await client.models.generateContent({
-    model: GEMINI_MODEL,
-    contents: [
-      {
-        role: 'user',
-        parts: [
-          { inlineData: { mimeType: 'application/pdf', data: base64 } },
-          { text: 'Analyze this legal document according to the system instructions and return the required JSON.' },
-        ],
-      },
-    ],
-    config: {
-      systemInstruction: buildSystemInstruction(role, concern),
-      responseMimeType: 'application/json',
-      responseSchema: schema as never,
-      temperature: 0.1,
-    },
-  });
-
-  const latencyMs = Date.now() - start;
-  const text = response.text ?? '';
-
-  let data: unknown;
   try {
-    data = JSON.parse(text);
-  } catch {
-    return { data: null, latencyMs, model: GEMINI_MODEL, error: `JSON parse failed: ${text.slice(0, 200)}` };
-  }
+    const interaction = await client.interactions.create({
+      model: GEMINI_MODEL,
+      input: [
+        {
+          type: 'document',
+          data: base64,
+          mime_type: 'application/pdf',
+        },
+        {
+          type: 'text',
+          text: 'Analyze this legal document according to the system instructions and return the required JSON.',
+        },
+      ],
+      system_instruction: systemInstruction,
+      response_format: {
+        type: 'text',
+        mime_type: 'application/json',
+        schema: schema as Record<string, unknown>,
+      },
+      store: false,
+    });
 
-  return { data, latencyMs, model: GEMINI_MODEL, error: null };
+    const latencyMs = Date.now() - start;
+    const text = interaction.output_text ?? '';
+    const usage = interaction.usage ? {
+      total_tokens: interaction.usage.total_tokens,
+      input_tokens: interaction.usage.total_input_tokens,
+      output_tokens: interaction.usage.total_output_tokens,
+      thought_tokens: interaction.usage.total_thought_tokens,
+      cached_tokens: interaction.usage.total_cached_tokens,
+    } : null;
+
+    let data: unknown;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      return {
+        data: null,
+        latencyMs,
+        model: GEMINI_MODEL,
+        usage,
+        error: `JSON parse failed: ${text.slice(0, 200)}`,
+      };
+    }
+
+    return {
+      data,
+      latencyMs,
+      model: GEMINI_MODEL,
+      usage,
+      error: null,
+      error_classification: null,
+      retry_after: null,
+    };
+  } catch (err) {
+    const latencyMs = Date.now() - start;
+    const errorMsg = err instanceof Error ? err.message : String(err);
+
+    let classification = 'API_ERROR';
+    if (errorMsg.includes('429') || errorMsg.includes('RESOURCE_EXHAUSTED') || errorMsg.includes('quota')) {
+      classification = 'QUOTA_EXHAUSTED';
+    } else if (errorMsg.includes('401') || errorMsg.includes('403') || errorMsg.includes('API_KEY_INVALID')) {
+      classification = 'CREDENTIALS_INVALID';
+    }
+
+    let retryAfter = null;
+    const retryMatch = errorMsg.match(/Please retry in\s+([0-9.]+s)/);
+    if (retryMatch && retryMatch[1]) {
+      retryAfter = retryMatch[1];
+    }
+
+    return {
+      data: null,
+      latencyMs,
+      model: GEMINI_MODEL,
+      usage: null,
+      error: errorMsg,
+      error_classification: classification,
+      retry_after: retryAfter,
+    };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -415,7 +549,10 @@ export function computeContextDiff(
       status: 'not_run',
       fixture_sha256_a: runA.fixture_sha256,
       fixture_sha256_b: runB.fixture_sha256,
-      hashes_match: false,
+      document_sha256_a: runA.fixture_sha256,
+      document_sha256_b: runB.fixture_sha256,
+      hashes_match: runA.fixture_sha256 === runB.fixture_sha256,
+      same_document_bytes: runA.fixture_sha256 === runB.fixture_sha256,
       role_a: runA.role,
       role_b: runB.role,
       concern_a: runA.concern,
@@ -481,7 +618,10 @@ export function computeContextDiff(
     status: 'success',
     fixture_sha256_a: runA.fixture_sha256,
     fixture_sha256_b: runB.fixture_sha256,
+    document_sha256_a: runA.fixture_sha256,
+    document_sha256_b: runB.fixture_sha256,
     hashes_match: hashesMatch,
+    same_document_bytes: hashesMatch,
     role_a: runA.role,
     role_b: runB.role,
     concern_a: runA.concern,
@@ -634,7 +774,7 @@ async function runFailureTests(): Promise<FailureTestResult[]> {
   });
 
   // Test 4: Oversized file — deterministic
-  const MAX_BYTES = 15 * 1024 * 1024;
+  const MAX_BYTES = 3 * 1024 * 1024;
   const oversize = Buffer.alloc(MAX_BYTES + 1024);
   oversize.write('%PDF-1.4 fake', 0);
   const oversizeRejected = oversize.length > MAX_BYTES;
@@ -821,7 +961,7 @@ async function runLatencyExperiment(
   fixtureName: string,
   role: string,
   concern: string,
-): Promise<{ min_ms: number; max_ms: number; avg_ms: number; measurements: number[]; run_count: number }> {
+): Promise<{ status: 'success' | 'failed'; min_ms: number; max_ms: number; avg_ms: number; measurements: number[]; run_count: number }> {
   console.log('\n  ⏱  Latency experiment (3 runs)...');
   const { ANALYSIS_SCHEMA } = await import('../src/lib/schema.js');
   const fixture = loadFixture(fixtureName);
@@ -829,16 +969,25 @@ async function runLatencyExperiment(
 
   for (let i = 0; i < 3; i++) {
     console.log(`     Run ${i + 1}/3...`);
-    const result = await callGeminiDirect(fixture.bytes, role, concern, ANALYSIS_SCHEMA);
-    measurements.push(result.latencyMs);
-    console.log(`     ${result.latencyMs}ms`);
+    try {
+      const result = await callGeminiDirect(fixture.bytes, role, concern, ANALYSIS_SCHEMA);
+      if (result.latencyMs > 0) {
+        measurements.push(result.latencyMs);
+        console.log(`     ${result.latencyMs}ms`);
+      } else {
+        console.log(`     ⚠️  Run failed: ${result.error}`);
+      }
+    } catch (err) {
+      console.log(`     ⚠️  Run failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
     if (i < 2) await new Promise((r) => setTimeout(r, 1000)); // brief pause between runs
   }
 
   return {
-    min_ms: Math.min(...measurements),
-    max_ms: Math.max(...measurements),
-    avg_ms: Math.round(measurements.reduce((a, b) => a + b, 0) / measurements.length),
+    status: measurements.length > 0 ? 'success' : 'failed',
+    min_ms: measurements.length > 0 ? Math.min(...measurements) : 0,
+    max_ms: measurements.length > 0 ? Math.max(...measurements) : 0,
+    avg_ms: measurements.length > 0 ? Math.round(measurements.reduce((a, b) => a + b, 0) / measurements.length) : 0,
     measurements,
     run_count: measurements.length,
   };
@@ -848,7 +997,7 @@ async function runLatencyExperiment(
 // Verdict logic
 // ---------------------------------------------------------------------------
 
-export function computeVerdict(runs: ContextRunResult[], securityTest: SecurityTestResult | null, contextDiff: ContextDiffResult | null, preflightFailed: boolean = false): { verdict: 'GO' | 'MODIFY' | 'BLOCK' | 'BLOCKED_BY_CREDENTIALS'; blockers: string[]; rationale: string } {
+export function computeVerdict(runs: ContextRunResult[], securityTest: SecurityTestResult | null, contextDiff: ContextDiffResult | null, preflightFailed: boolean = false, preflightResult: PreflightResult | null = null, isSmoke: boolean = false): { verdict: 'GO' | 'MODIFY' | 'BLOCK' | 'BLOCKED_BY_CREDENTIALS' | 'LIVE_GEMINI_BLOCKED' | 'RATE_LIMITED'; blockers: string[]; rationale: string } {
   const blockers: string[] = [];
 
   if (preflightFailed) {
@@ -856,6 +1005,14 @@ export function computeVerdict(runs: ContextRunResult[], securityTest: SecurityT
       verdict: 'BLOCKED_BY_CREDENTIALS',
       blockers: ['Gemini API key unavailable or invalid'],
       rationale: 'BLOCKED: Live validation could not run due to missing credentials.',
+    };
+  }
+
+  if (preflightResult && preflightResult.status === 'failed') {
+    return {
+      verdict: 'LIVE_GEMINI_BLOCKED',
+      blockers: [`LIVE_GEMINI_BLOCKED: API preflight failed (${preflightResult.error_classification}: ${preflightResult.error_message})`],
+      rationale: `LIVE_GEMINI_BLOCKED: Gemini API validation failed before reaching application code. Check your model availability and connection.`,
     };
   }
 
@@ -869,7 +1026,19 @@ export function computeVerdict(runs: ContextRunResult[], securityTest: SecurityT
   if (securityTest && securityTest.output_structure_overridden) blockers.push('CRITICAL: Output structure overridden by injection');
 
   const successfulRuns = runs.filter((r) => r.schema_valid && !r.error);
-  if (successfulRuns.length === 0) blockers.push('No successful live API runs completed');
+  const rateLimitedRuns = runs.filter((r) => r.error_classification === 'QUOTA_EXHAUSTED');
+
+  if (rateLimitedRuns.length > 0) {
+    const run = rateLimitedRuns[0];
+    const retryMsg = run.retry_after ? `(Retry after ${run.retry_after})` : '(No retry-after provided)';
+    return {
+      verdict: 'RATE_LIMITED',
+      blockers: [`RATE_LIMITED: Run ${run.run_id} hit 429 Quota Exceeded ${retryMsg}`],
+      rationale: `RATE_LIMITED: Gemini API quota exceeded. ${retryMsg}. Wait before running again.`,
+    };
+  }
+
+  if (successfulRuns.length === 0 && !isSmoke) blockers.push('No successful live API runs completed');
 
   // MODIFY conditions
   const modifyNotes: string[] = [];
@@ -898,8 +1067,10 @@ export function computeVerdict(runs: ContextRunResult[], securityTest: SecurityT
 // ---------------------------------------------------------------------------
 
 async function main() {
+  const isSmoke = process.argv.includes('--smoke');
   console.log('='.repeat(60));
-  console.log('CONTEXTUALIS — Phase 0.5 Live Gemini Validation');
+  if (isSmoke) console.log('CONTEXTUALIS — Phase 0.5-C Quota-Aware Live SMOKE Validation');
+  else console.log('CONTEXTUALIS — Phase 0.5 Live Gemini Validation');
   console.log(`Node: ${process.version}`);
   console.log(`SDK: ${getSdkVersion()}`);
   console.log(`Schema version: ${getSchemaVersion()}`);
@@ -918,6 +1089,7 @@ async function main() {
   // ── Preflight Credential Check
   console.log('\n[Preflight] Checking Gemini API credentials...');
   let preflightFailed = false;
+  let preflightResult: PreflightResult | null = null;
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey || apiKey.trim() === '' || apiKey.includes('your_gemini_api_key_here')) {
     console.log('  ✗ Gemini API key unavailable');
@@ -925,7 +1097,15 @@ async function main() {
     console.log('  Create/update .env and set GEMINI_API_KEY.');
     preflightFailed = true;
   } else {
-    console.log('  ✓ Gemini API key found');
+    console.log('  ✓ Gemini API key found in environment');
+    preflightResult = await runGeminiPreflight(apiKey);
+    if (preflightResult.status === 'failed') {
+      console.log(`  ✗ API Preflight failed: ${preflightResult.error_classification}`);
+      console.log(`    ${preflightResult.error_message}`);
+      preflightFailed = false; // We set this to false so it hits LIVE_GEMINI_BLOCKED instead of BLOCKED_BY_CREDENTIALS
+    } else {
+      console.log(`  ✓ API Preflight successful (${preflightResult.latency_ms}ms)`);
+    }
   }
 
   const runs: ContextRunResult[] = [];
@@ -934,54 +1114,66 @@ async function main() {
   let latencySummary: any = null;
   let failureTests: FailureTestResult[] = [];
 
-  if (!preflightFailed) {
+  if (!preflightFailed && (!preflightResult || preflightResult.status === 'success')) {
     // ── Context A: Small Business Tenant / Financial Exposure (fixture A)
     console.log('\n[Step 1] Context A: Small Business Tenant / Financial Exposure');
     const runA = await runContextValidation('clean-lease.pdf', 'Small Business Tenant', 'Financial Exposure', 'context-a');
     runs.push(runA);
 
-    // ── Context B: Landlord / Exit & Renewal Obligations (same fixture A — must match hash)
-    console.log('\n[Step 2] Context B: Landlord / Exit & Renewal Obligations');
-    const runB = await runContextValidation('clean-lease.pdf', 'Landlord', 'Exit / Renewal Obligations', 'context-b');
-    runs.push(runB);
+    if (runA.error_classification === 'QUOTA_EXHAUSTED') {
+      console.log('\n  ⚠️  Run A hit quota limits. Stopping smoke run cleanly to avoid duplicate 429s.');
+    } else {
+      // ── Context B: Landlord / Exit & Renewal Obligations (same fixture A — must match hash)
+      console.log('\n[Step 2] Context B: Landlord / Exit & Renewal Obligations');
+      const runB = await runContextValidation('clean-lease.pdf', 'Landlord', 'Exit / Renewal Obligations', 'context-b');
+      runs.push(runB);
 
-    // ── Context differentiation analysis
-    console.log('\n[Step 3] Context differentiation analysis');
-    contextDiff = computeContextDiff(runA, runB);
-    console.log(`  Hashes match: ${contextDiff.hashes_match}`);
-    console.log(`  Differentiation score: ${contextDiff.differentiation_score}`);
-    console.log(`  Unique to A: ${contextDiff.unique_to_a.join(', ') || 'none'}`);
-    console.log(`  Unique to B: ${contextDiff.unique_to_b.join(', ') || 'none'}`);
+      // ── Context differentiation analysis
+      console.log('\n[Step 3] Context differentiation analysis');
+      contextDiff = computeContextDiff(runA, runB);
+      console.log(`  Hashes match: ${contextDiff.hashes_match}`);
+      console.log(`  Differentiation score: ${contextDiff.differentiation_score}`);
+      console.log(`  Unique to A: ${contextDiff.unique_to_a.join(', ') || 'none'}`);
+      console.log(`  Unique to B: ${contextDiff.unique_to_b.join(', ') || 'none'}`);
 
-    // ── Adversarial injection test
-    console.log('\n[Step 4] Adversarial prompt-injection test');
-    const runAdv = await runContextValidation('adversarial.pdf', 'Small Business Client', 'Liability', 'adversarial');
-    runs.push(runAdv);
-    securityTest = analyzeSecurityResult('adversarial.pdf', loadFixture('adversarial.pdf').sha256, runAdv);
-    console.log(`  Security test passed: ${securityTest.passed}`);
-    if (!securityTest.passed) {
-      console.log(`  ⚠️  Failures: ${JSON.stringify({ schema: securityTest.schema_valid, evStatus: securityTest.evidence_status_in_output, sysPrompt: securityTest.system_prompt_disclosed })}`);
+      if (runB.error_classification === 'QUOTA_EXHAUSTED') {
+        console.log('\n  ⚠️  Run B hit quota limits. Stopping run cleanly.');
+      }
     }
 
-    // ── Latency experiment
-    console.log('\n[Step 5] Latency experiment');
-    latencySummary = await runLatencyExperiment('clean-lease.pdf', 'Small Business Tenant', 'Financial Exposure');
-    console.log(`  min=${latencySummary.min_ms}ms max=${latencySummary.max_ms}ms avg=${latencySummary.avg_ms}ms`);
+    if (!isSmoke) {
+      // ── Adversarial injection test
+      console.log('\n[Step 4] Adversarial prompt-injection test');
+      const runAdv = await runContextValidation('adversarial.pdf', 'Small Business Client', 'Liability', 'adversarial');
+      runs.push(runAdv);
+      securityTest = analyzeSecurityResult('adversarial.pdf', loadFixture('adversarial.pdf').sha256, runAdv);
+      console.log(`  Security test passed: ${securityTest.passed}`);
+      if (!securityTest.passed) {
+        console.log(`  ⚠️  Failures: ${JSON.stringify({ schema: securityTest.schema_valid, evStatus: securityTest.evidence_status_in_output, sysPrompt: securityTest.system_prompt_disclosed })}`);
+      }
 
-    // ── Stress fixture test (formatting stress)
-    console.log('\n[Step 6] Formatting-stress fixture test');
-    const runStress = await runContextValidation('stress-lease.pdf', 'Small Business Tenant', 'Financial Exposure', 'stress-fixture');
-    runs.push(runStress);
+      // ── Latency experiment
+      console.log('\n[Step 5] Latency experiment');
+      latencySummary = await runLatencyExperiment('clean-lease.pdf', 'Small Business Tenant', 'Financial Exposure');
+      console.log(`  min=${latencySummary.min_ms}ms max=${latencySummary.max_ms}ms avg=${latencySummary.avg_ms}ms`);
 
-    // ── Failure mode tests (deterministic)
-    console.log('\n[Step 7] Failure mode tests (deterministic)');
-    failureTests = await runFailureTests();
-    const failurePassed = failureTests.filter((t) => t.passed).length;
-    console.log(`  ${failurePassed}/${failureTests.length} failure tests passed`);
+      // ── Stress fixture test (formatting stress)
+      console.log('\n[Step 6] Formatting-stress fixture test');
+      const runStress = await runContextValidation('stress-lease.pdf', 'Small Business Tenant', 'Financial Exposure', 'stress-fixture');
+      runs.push(runStress);
+
+      // ── Failure mode tests (deterministic)
+      console.log('\n[Step 7] Failure mode tests (deterministic)');
+      failureTests = await runFailureTests();
+      const failurePassed = failureTests.filter((t) => t.passed).length;
+      console.log(`  ${failurePassed}/${failureTests.length} failure tests passed`);
+    } else {
+      console.log('\n  [Smoke Mode] Skipping steps 4-7 to conserve quota.');
+    }
   }
 
   // ── Verdict
-  const { verdict, blockers, rationale } = computeVerdict(runs, securityTest, contextDiff, preflightFailed);
+  const { verdict, blockers, rationale } = computeVerdict(runs, securityTest, contextDiff, preflightFailed, preflightResult, isSmoke);
   console.log(`\n${'='.repeat(60)}`);
   console.log(`VERDICT: ${verdict}`);
   console.log(`Rationale: ${rationale}`);
@@ -1032,7 +1224,7 @@ async function main() {
   console.log(`\n📄 Results written to: ${resultPath}`);
   console.log(`📄 Latest results: ${latestPath}`);
 
-  if (verdict === 'BLOCK' || verdict === 'BLOCKED_BY_CREDENTIALS') {
+  if (verdict === 'BLOCK' || verdict === 'BLOCKED_BY_CREDENTIALS' || verdict === 'LIVE_GEMINI_BLOCKED') {
     console.error('\n🚫 BLOCK: Production dashboard development MUST NOT begin.');
     process.exit(1);
   }

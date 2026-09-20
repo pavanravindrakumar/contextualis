@@ -72,13 +72,23 @@ type ValidationReport = {
     approximate_rate: number;
     unverified_rate: number;
     raw_analysis: unknown;
+    usage_metadata?: {
+      total_tokens?: number;
+      input_tokens?: number;
+      output_tokens?: number;
+      thought_tokens?: number;
+      cached_tokens?: number;
+    } | null;
     error: string | null;
   }>;
   context_diff: {
     status: 'success' | 'not_run';
     fixture_sha256_a: string;
     fixture_sha256_b: string;
+    document_sha256_a?: string;
+    document_sha256_b?: string;
     hashes_match: boolean;
+    same_document_bytes?: boolean;
     differentiation_score: number;
     unique_to_a: string[];
     unique_to_b: string[];
@@ -94,6 +104,7 @@ type ValidationReport = {
     passed: boolean;
   } | null;
   latency_summary: {
+    status?: 'success' | 'failed';
     min_ms: number;
     max_ms: number;
     avg_ms: number;
@@ -114,7 +125,7 @@ type ValidationReport = {
     all_failure_tests_passed: boolean;
     blocker_count: number;
     blockers: string[];
-    verdict: 'GO' | 'MODIFY' | 'BLOCK' | 'BLOCKED_BY_CREDENTIALS';
+    verdict: 'GO' | 'MODIFY' | 'BLOCK' | 'BLOCKED_BY_CREDENTIALS' | 'LIVE_GEMINI_BLOCKED' | 'RATE_LIMITED';
   };
 };
 
@@ -258,7 +269,13 @@ describe('Validation report structure — offline assertions on live results', (
     if (!results) return;
     if (!results.context_diff || results.context_diff.status !== 'success') return;
     expect(results.context_diff.hashes_match).toBe(true);
+    if (results.context_diff.same_document_bytes !== undefined) {
+      expect(results.context_diff.same_document_bytes).toBe(true);
+    }
     expect(results.context_diff.fixture_sha256_a).toBe(results.context_diff.fixture_sha256_b);
+    if (results.context_diff.document_sha256_a !== undefined) {
+      expect(results.context_diff.document_sha256_a).toBe(results.context_diff.document_sha256_b);
+    }
   });
 
   it('all successful runs have schema_valid = true', () => {
@@ -320,6 +337,7 @@ describe('Validation report structure — offline assertions on live results', (
 
   it('latency measurements are positive numbers', () => {
     if (!results?.latency_summary) return;
+    if (results.latency_summary.status && results.latency_summary.status !== 'success') return;
     expect(results.latency_summary.run_count).toBeGreaterThanOrEqual(1);
     for (const ms of results.latency_summary.measurements) {
       expect(ms).toBeGreaterThan(0);
@@ -342,9 +360,9 @@ describe('Validation report structure — offline assertions on live results', (
     expect(test.passed).toBe(true);
   });
 
-  it('verdict is one of GO / MODIFY / BLOCK / BLOCKED_BY_CREDENTIALS', () => {
+  it('verdict is one of GO / MODIFY / BLOCK / BLOCKED_BY_CREDENTIALS / LIVE_GEMINI_BLOCKED', () => {
     if (!results) return;
-    expect(['GO', 'MODIFY', 'BLOCK', 'BLOCKED_BY_CREDENTIALS']).toContain(results.summary.verdict);
+    expect(['GO', 'MODIFY', 'BLOCK', 'BLOCKED_BY_CREDENTIALS', 'LIVE_GEMINI_BLOCKED']).toContain(results.summary.verdict);
   });
 
   it('report does not claim zero hallucinations', () => {

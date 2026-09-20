@@ -56,6 +56,9 @@ describe('Validation Logic — Offline Deterministic Tests', () => {
       expect(diff.status).toBe('not_run');
       expect(diff.differentiation_score).toBe(0);
       expect(diff.summary_different).toBe(false);
+      // hashes match if both runs have the same fixture_sha256, even if one failed
+      expect(diff.hashes_match).toBe(true);
+      expect(diff.same_document_bytes).toBe(true);
     });
 
     it('returns not_run status if both runs failed (Both contexts unavailable)', () => {
@@ -90,16 +93,40 @@ describe('Validation Logic — Offline Deterministic Tests', () => {
   describe('computeVerdict', () => {
     it('returns BLOCKED_BY_CREDENTIALS if preflight failed (missing, empty, placeholder credentials)', () => {
       // Regardless of what runs exist, if preflight fails, it's blocked
-      const result = computeVerdict([], null, null, true);
+      const result = computeVerdict([], null, null, true, null);
       expect(result.verdict).toBe('BLOCKED_BY_CREDENTIALS');
       expect(result.blockers).toContain('Gemini API key unavailable or invalid');
     });
 
+    it('returns LIVE_GEMINI_BLOCKED if Gemini preflight fails', () => {
+      const result = computeVerdict([], null, null, false, {
+        status: 'failed',
+        model: 'gemini-3.8-flash',
+        latency_ms: 100,
+        error_classification: 'CREDENTIALS_INVALID',
+        error_message: 'Invalid API key'
+      });
+      expect(result.verdict).toBe('LIVE_GEMINI_BLOCKED');
+      expect(result.blockers.some((b) => b.includes('LIVE_GEMINI_BLOCKED'))).toBe(true);
+    });
+
     it('returns BLOCK if schema validation fails on any successful-status API run', () => {
       const badRun = { ...mockSuccessRun, schema_valid: false };
-      const result = computeVerdict([badRun], null, null, false);
+      const result = computeVerdict([badRun], null, null, false, null);
       expect(result.verdict).toBe('BLOCK');
       expect(result.blockers.some((b) => b.includes('Schema validation failed'))).toBe(true);
+    });
+
+    it('returns RATE_LIMITED if any run was quota exhausted', () => {
+      const rateLimitedRun = {
+        ...mockFailedRun,
+        error_classification: 'QUOTA_EXHAUSTED',
+        retry_after: '15s',
+      };
+      const result = computeVerdict([rateLimitedRun], null, null, false, null);
+      expect(result.verdict).toBe('RATE_LIMITED');
+      expect(result.blockers.some((b) => b.includes('RATE_LIMITED'))).toBe(true);
+      expect(result.rationale).toContain('Retry after 15s');
     });
 
     it('returns GO when runs succeed and security passes', () => {
@@ -109,13 +136,13 @@ describe('Validation Logic — Offline Deterministic Tests', () => {
         system_prompt_disclosed: false, unauthorized_tool_use: false,
         output_structure_overridden: false, passed: true, notes: ''
       }, {
-        status: 'success', fixture_sha256_a: '', fixture_sha256_b: '', hashes_match: true,
+        status: 'success', fixture_sha256_a: '', fixture_sha256_b: '', document_sha256_a: '', document_sha256_b: '', hashes_match: true, same_document_bytes: true,
         role_a: '', role_b: '', concern_a: '', concern_b: '', summary_different: true,
         shared_attention_titles: [], unique_to_a: [], unique_to_b: [], shared_obligations_who: [],
         unique_obligations_a: [], unique_obligations_b: [], question_overlap_count: 0,
         question_unique_a: [], question_unique_b: [], differentiation_score: 1.0, notes: ''
-      }, false);
-      
+      }, false, null);
+
       expect(result.verdict).toBe('GO');
     });
   });

@@ -27,12 +27,16 @@ export type EvidenceStatus =
   | 'unverified_scanned';
 
 export interface TextItem {
+  /** Optional identifier for the source text item */
+  id?: string;
   /** Normalized text content of this item */
   text: string;
   /** 0-indexed page number */
   page: number;
   /** Bounding box in PDF user-space units [x, y, width, height] */
   bbox: [number, number, number, number];
+  /** Optional character offset of this character within the original item's text */
+  charOffset?: number;
 }
 
 /**
@@ -106,6 +110,8 @@ export interface DocumentIndex {
   scannedPages: Set<number>;
   /** Total page count */
   pageCount: number;
+  /** Optional classification per page: TEXT_EXTRACTABLE | LOW_TEXT_DENSITY | SCANNED_NO_TEXT */
+  pageClassifications?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -219,37 +225,111 @@ function lcsLength(a: string[], b: string[]): number {
 }
 
 // ---------------------------------------------------------------------------
-// Span reconstruction
+// Span reconstruction & precise bounding box calculation
 // ---------------------------------------------------------------------------
+
+/**
+ * Proportional typographic weights for Latin glyphs in standard sans-serif / serif fonts.
+ * Used to calculate accurate intra-item bounding boxes for matched character ranges.
+ */
+export function getCharWeight(ch: string): number {
+  if ('ijlI1.:;!|\'",`'.includes(ch)) return 0.35;
+  if ('frt-()[]{} '.includes(ch)) return 0.55;
+  if ('mwMW@%#&'.includes(ch)) return 1.4;
+  if (ch >= 'A' && ch <= 'Z') return 0.95;
+  if (ch >= '0' && ch <= '9') return 0.75;
+  return 0.7; // default lowercase
+}
+
+/**
+ * Deterministically compute exact sub-bounding box for a character range [startChar, endChar]
+ * within an item whose full text is `text` and full bounding box is `bbox = [x, y, w, h]`.
+ */
+export function computeSubBbox(
+  text: string,
+  startChar: number,
+  endChar: number,
+  bbox: [number, number, number, number],
+): [number, number, number, number] {
+  const [x, y, totalW, h] = bbox;
+  if (startChar <= 0 && endChar >= text.length - 1) {
+    return bbox;
+  }
+
+  let totalWeight = 0;
+  const weights: number[] = new Array(text.length);
+  for (let i = 0; i < text.length; i++) {
+    const w = getCharWeight(text[i]);
+    weights[i] = w;
+    totalWeight += w;
+  }
+  if (totalWeight <= 0) return bbox;
+
+  const unitW = totalW / totalWeight;
+  let offsetW = 0;
+  for (let i = 0; i < startChar && i < text.length; i++) {
+    offsetW += weights[i] * unitW;
+  }
+  let subW = 0;
+  for (let i = startChar; i <= endChar && i < text.length; i++) {
+    subW += weights[i] * unitW;
+  }
+
+  return [x + offsetW, y, subW, h];
+}
 
 /**
  * Given a start/end offset in normalizedText and the charToItem index,
  * reconstruct the set of bounding boxes and the page number.
+ *
+ * Implements deterministic intra-item character range sub-bounding boxes
+ * so the highlighted region corresponds exactly to the matched quote.
  */
 function offsetsToSpan(
   start: number,
   end: number,
   index: DocumentIndex,
 ): NormalizedSpan {
-  const bboxMap = new Map<string, [number, number, number, number]>();
+  const itemCharMap = new Map<string, { item: TextItem; charOffsets: number[] }>();
   let page = 0;
 
   for (let i = start; i < end && i < index.charToItem.length; i++) {
-    const item = index.charToItem[i];
-    if (item) {
-      page = item.page;
-      const key = `${item.page}:${item.bbox.join(',')}`;
-      if (!bboxMap.has(key)) {
-        bboxMap.set(key, item.bbox);
+    const entry = index.charToItem[i];
+    if (entry && entry.bbox && (entry.bbox[2] > 0 || entry.bbox[3] > 0)) {
+      page = entry.page;
+      const key = entry.id ?? `${entry.page}:${entry.bbox.join(',')}:${entry.text}`;
+      let group = itemCharMap.get(key);
+      if (!group) {
+        group = { item: entry, charOffsets: [] };
+        itemCharMap.set(key, group);
+      }
+      if (entry.charOffset !== undefined && entry.charOffset >= 0) {
+        group.charOffsets.push(entry.charOffset);
       }
     }
+  }
+
+  const bboxes: Array<[number, number, number, number]> = [];
+
+  for (const { item, charOffsets } of itemCharMap.values()) {
+    if (charOffsets.length === 0 || item.charOffset === undefined) {
+      bboxes.push(item.bbox);
+      continue;
+    }
+
+    charOffsets.sort((a, b) => a - b);
+    const minChar = charOffsets[0];
+    const maxChar = charOffsets[charOffsets.length - 1];
+
+    const subBbox = computeSubBbox(item.text, minChar, maxChar, item.bbox);
+    bboxes.push(subBbox);
   }
 
   return {
     start,
     end,
     page,
-    bboxes: [...bboxMap.values()],
+    bboxes,
   };
 }
 

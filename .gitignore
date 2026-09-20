@@ -38,9 +38,14 @@ graphify-out/
 
 # Large test fixtures — keep repo under 10 MB
 tests/fixtures/*.pdf
+!tests/fixtures/stress-lease.pdf
 
 # Live validation results — local artifacts (hashes committed, raw results not)
 scripts/results/validation-*.json
 
 # tsx cache
 .tsx-cache/
+
+# Scratch & temporary debugging scripts
+scratch/
+test-preflight.ts

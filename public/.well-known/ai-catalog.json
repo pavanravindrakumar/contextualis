@@ -1,0 +1,15 @@
+{
+  "specVersion": "1.0",
+  "entries": [
+    {
+      "identifier": "urn:air:contextualis:navigator:legal-intelligence",
+      "displayName": "Contextualis Legal Document Navigator",
+      "type": "application/mcp-server-card+json",
+      "url": "/",
+      "representativeQueries": [
+        "analyze lease agreement",
+        "review financial obligations"
+      ]
+    }
+  ]
+}

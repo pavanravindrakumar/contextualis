@@ -11,6 +11,7 @@ This directory contains Architecture Decision Records (ADRs) for Contextualis.
 | 0003 | Dual Pipeline — AI Analysis + Client-side Evidence Verification | Accepted | 2026-09-15 |
 | 0004 | Tiered Evidence Matcher with Configurable Thresholds | Accepted | 2026-09-15 |
 | 0005 | Schema-First Validation with Ajv + response_json_schema | Accepted | 2026-09-15 |
+| 0006 | In-Memory Context Switch Persistence | Accepted | 2026-09-18 |
 
 ## Creating a New ADR
 
