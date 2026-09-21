@@ -15,7 +15,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import { ContextSelector } from '../src/components/context/ContextSelector';
 import App from '../src/App';
 
@@ -37,12 +37,12 @@ describe('ContextSelector — Initial Selection & Prop Persistence', () => {
     const tenantChip = screen.getByTestId('role-chip-small-business-tenant');
     const landlordChip = screen.getByTestId('role-chip-landlord');
     const financeChip = screen.getByTestId('concern-chip-financial-exposure');
-    const exitChip = screen.getByTestId('concern-chip-exit-renewal');
+    const exitChip = screen.queryByTestId('concern-chip-exit-renewal');
 
     expect(tenantChip.getAttribute('aria-pressed')).toBe('true');
     expect(landlordChip.getAttribute('aria-pressed')).toBe('false');
     expect(financeChip.getAttribute('aria-pressed')).toBe('true');
-    expect(exitChip.getAttribute('aria-pressed')).toBe('false');
+    expect(exitChip).toBeNull();
 
     expect(screen.getByText(/Analysing as:/i).textContent).toContain('Small Business Tenant');
     expect(screen.getByText(/Analysing as:/i).textContent).toContain('Financial Exposure');
@@ -60,26 +60,26 @@ describe('ContextSelector — Initial Selection & Prop Persistence', () => {
 
     const tenantChip = screen.getByTestId('role-chip-small-business-tenant');
     const landlordChip = screen.getByTestId('role-chip-landlord');
-    const financeChip = screen.getByTestId('concern-chip-financial-exposure');
+    const financeChip = screen.queryByTestId('concern-chip-financial-exposure');
     const exitChip = screen.getByTestId('concern-chip-exit-renewal');
 
     expect(landlordChip.getAttribute('aria-pressed')).toBe('true');
     expect(tenantChip.getAttribute('aria-pressed')).toBe('false');
     expect(exitChip.getAttribute('aria-pressed')).toBe('true');
-    expect(financeChip.getAttribute('aria-pressed')).toBe('false');
+    expect(financeChip).toBeNull();
 
     expect(screen.getByText(/Analysing as:/i).textContent).toContain('Landlord');
     expect(screen.getByText(/Analysing as:/i).textContent).toContain('Exit / Renewal Obligations');
   });
 
-  it('C. allows user to change role independently without resetting concern', () => {
+  it('C. Live mode allows user to change role independently without resetting concern', () => {
     const onStartAnalysis = vi.fn();
     render(
       <ContextSelector
         onStartAnalysis={onStartAnalysis}
-        isDemoMode={true}
+        isDemoMode={false} // Demo mode restricts roles, so we test this in Live mode
         initialRoleId="landlord"
-        initialConcernId="exit-renewal"
+        initialConcernId="financial-exposure"
       />
     );
 
@@ -88,19 +88,19 @@ describe('ContextSelector — Initial Selection & Prop Persistence', () => {
 
     expect(screen.getByTestId('role-chip-employee').getAttribute('aria-pressed')).toBe('true');
     expect(screen.getByTestId('role-chip-landlord').getAttribute('aria-pressed')).toBe('false');
-    // Concern should remain Exit / Renewal
-    expect(screen.getByTestId('concern-chip-exit-renewal').getAttribute('aria-pressed')).toBe('true');
+    // Concern should remain
+    expect(screen.getByTestId('concern-chip-financial-exposure').getAttribute('aria-pressed')).toBe('true');
 
     fireEvent.click(screen.getByTestId('start-analysis-btn'));
-    expect(onStartAnalysis).toHaveBeenCalledWith('employee', 'exit-renewal');
+    expect(onStartAnalysis).toHaveBeenCalledWith('employee', 'financial-exposure');
   });
 
-  it('C. allows user to change concern independently without resetting role', () => {
+  it('C. Live mode allows user to change concern independently without resetting role', () => {
     const onStartAnalysis = vi.fn();
     render(
       <ContextSelector
         onStartAnalysis={onStartAnalysis}
-        isDemoMode={true}
+        isDemoMode={false} // Demo mode restricts concerns, so we test this in Live mode
         initialRoleId="landlord"
         initialConcernId="exit-renewal"
       />
@@ -159,19 +159,18 @@ describe('App — Context Switch Persistence Flow', () => {
     const landlordChip = screen.getByTestId('role-chip-landlord');
     const tenantChip = screen.getByTestId('role-chip-small-business-tenant');
     const exitChip = screen.getByTestId('concern-chip-exit-renewal');
-    const financeChip = screen.getByTestId('concern-chip-financial-exposure');
 
     expect(landlordChip.getAttribute('aria-pressed')).toBe('true');
     expect(tenantChip.getAttribute('aria-pressed')).toBe('false');
     expect(exitChip.getAttribute('aria-pressed')).toBe('true');
-    expect(financeChip.getAttribute('aria-pressed')).toBe('false');
+    expect(screen.queryByTestId('concern-chip-financial-exposure')).toBeNull();
 
     const preview = screen.getByText(/Analysing as:/i);
     expect(preview.textContent).toContain('Landlord');
     expect(preview.textContent).toContain('Exit / Renewal Obligations');
   });
 
-  it('D. Step 8 guard regression: switching from Landlord to unsupported concern still triggers error alert', async () => {
+  it('D. Step 8 guard regression: Demo Mode proactively switches back to valid demo context rather than breaking', async () => {
     const dummyBlob = new Blob(['%PDF-1.4 mock content'], { type: 'application/pdf' });
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: true,
@@ -185,7 +184,7 @@ describe('App — Context Switch Persistence Flow', () => {
 
     // 2. Select Landlord + Exit / Renewal
     fireEvent.click(screen.getByTestId('role-chip-landlord'));
-    fireEvent.click(screen.getByTestId('concern-chip-exit-renewal'));
+    // exit-renewal is selected automatically now, but just checking it works
     fireEvent.click(screen.getByTestId('start-analysis-btn'));
 
     // 3. Await deterministic rendered state of lazy-loaded dashboard
@@ -196,17 +195,14 @@ describe('App — Context Switch Persistence Flow', () => {
 
     expect(await screen.findByText(/Choose your demo context/i)).toBeTruthy();
 
-    // 5. Switch concern to Financial Exposure (Landlord + Financial Exposure is unsupported in demo)
-    fireEvent.click(screen.getByTestId('concern-chip-financial-exposure'));
-    fireEvent.click(screen.getByTestId('start-analysis-btn'));
+    // 5. User clicks Tenant role. Financial Exposure should be selected automatically.
+    fireEvent.click(screen.getByTestId('role-chip-small-business-tenant'));
 
-    // 6. Should trigger Step 8 unsupported demo context alert
-    await waitFor(() => {
-      expect(screen.getByRole('alert')).toBeTruthy();
-      expect(screen.getByText(/Demo mode supports the Tenant and Landlord lenses for this document/i)).toBeTruthy();
-    });
+    // We expect NO unsupported context error, because UI enforces combinations
+    expect(screen.queryByRole('alert')).toBeNull();
 
-    // Dashboard not shown
-    expect(screen.queryByTestId('pdf-viewer')).toBeNull();
+    // Financial exposure chip should be the only concern available
+    expect(screen.getByTestId('concern-chip-financial-exposure')).toBeTruthy();
+    expect(screen.queryByTestId('concern-chip-exit-renewal')).toBeNull();
   });
 });

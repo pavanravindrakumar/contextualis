@@ -101,20 +101,35 @@ describe('LandingScreen', () => {
 import { ContextSelector } from '../src/components/context/ContextSelector';
 
 describe('ContextSelector', () => {
-  it('renders role chips for all 4 roles', () => {
-    render(<ContextSelector onStartAnalysis={vi.fn()} isDemoMode={true} />);
+  it('Live Mode: renders role chips for all 4 roles', () => {
+    render(<ContextSelector onStartAnalysis={vi.fn()} isDemoMode={false} />);
     expect(screen.getByTestId('role-chip-small-business-tenant')).toBeTruthy();
     expect(screen.getByTestId('role-chip-landlord')).toBeTruthy();
     expect(screen.getByTestId('role-chip-employee')).toBeTruthy();
     expect(screen.getByTestId('role-chip-employer')).toBeTruthy();
   });
 
-  it('renders concern chips for all 4 concerns', () => {
-    render(<ContextSelector onStartAnalysis={vi.fn()} isDemoMode={true} />);
+  it('Live Mode: renders concern chips for all 4 concerns', () => {
+    render(<ContextSelector onStartAnalysis={vi.fn()} isDemoMode={false} />);
     expect(screen.getByTestId('concern-chip-financial-exposure')).toBeTruthy();
     expect(screen.getByTestId('concern-chip-exit-renewal')).toBeTruthy();
     expect(screen.getByTestId('concern-chip-liability-risk')).toBeTruthy();
     expect(screen.getByTestId('concern-chip-rights-protections')).toBeTruthy();
+  });
+
+  it('Demo Mode: exposes only the two supported combinations', () => {
+    render(<ContextSelector onStartAnalysis={vi.fn()} isDemoMode={true} />);
+    // Only two roles
+    expect(screen.getByTestId('role-chip-small-business-tenant')).toBeTruthy();
+    expect(screen.getByTestId('role-chip-landlord')).toBeTruthy();
+    expect(screen.queryByTestId('role-chip-employee')).toBeNull();
+    expect(screen.queryByTestId('role-chip-employer')).toBeNull();
+
+    // Only one concern at a time
+    expect(screen.getByTestId('concern-chip-financial-exposure')).toBeTruthy();
+    expect(screen.queryByTestId('concern-chip-exit-renewal')).toBeNull();
+    expect(screen.queryByTestId('concern-chip-liability-risk')).toBeNull();
+    expect(screen.queryByTestId('concern-chip-rights-protections')).toBeNull();
   });
 
   it('shows demo banner when isDemoMode=true', () => {
@@ -133,12 +148,24 @@ describe('ContextSelector', () => {
     expect(chip.getAttribute('aria-pressed')).toBe('true');
   });
 
-  it('clicking landlord role chip sets it as active', () => {
+  it('clicking landlord role chip in Demo Mode automatically selects exit-renewal concern', () => {
     render(<ContextSelector onStartAnalysis={vi.fn()} isDemoMode={true} />);
     const landlordChip = screen.getByTestId('role-chip-landlord');
     fireEvent.click(landlordChip);
     expect(landlordChip.getAttribute('aria-pressed')).toBe('true');
     expect(screen.getByTestId('role-chip-small-business-tenant').getAttribute('aria-pressed')).toBe('false');
+    // Ensure the concern automatically updated
+    expect(screen.getByTestId('concern-chip-exit-renewal')).toBeTruthy();
+    expect(screen.queryByTestId('concern-chip-financial-exposure')).toBeNull();
+  });
+
+  it('switching Demo to Live restores the full option set', () => {
+    const { rerender } = render(<ContextSelector onStartAnalysis={vi.fn()} isDemoMode={true} />);
+    expect(screen.queryByTestId('role-chip-employee')).toBeNull();
+
+    rerender(<ContextSelector onStartAnalysis={vi.fn()} isDemoMode={false} />);
+    expect(screen.getByTestId('role-chip-employee')).toBeTruthy();
+    expect(screen.getByTestId('concern-chip-liability-risk')).toBeTruthy();
   });
 
   it('calls onStartAnalysis with typed IDs on submit', () => {
@@ -152,6 +179,7 @@ describe('ContextSelector', () => {
     const onStartAnalysis = vi.fn();
     render(<ContextSelector onStartAnalysis={onStartAnalysis} isDemoMode={true} />);
     fireEvent.click(screen.getByTestId('role-chip-landlord'));
+    // The concern chip click is no longer necessary, but it should be available
     fireEvent.click(screen.getByTestId('concern-chip-exit-renewal'));
     fireEvent.click(screen.getByTestId('start-analysis-btn'));
     expect(onStartAnalysis).toHaveBeenCalledWith('landlord', 'exit-renewal');
@@ -190,7 +218,7 @@ describe('ContextSelector', () => {
     render(
       <ContextSelector
         onStartAnalysis={vi.fn()}
-        isDemoMode={true}
+        isDemoMode={false}
         initialRoleId="landlord"
         initialConcernId="exit-renewal"
       />
@@ -270,7 +298,7 @@ describe('AttentionItemCard — evidence states', () => {
     const verifiedMatch = { status: 'verified', spans: [{ page: 1, bboxes: [[10, 10, 100, 20]] }] };
     render(<AttentionItemCard item={HIGH_ITEM} evidenceMatch={verifiedMatch} onEvidenceClick={vi.fn()} />);
 
-    expect(screen.getByLabelText(/evidence status: verified/i)).toBeTruthy();
+    expect(screen.getByLabelText(/evidence status: source text verified/i)).toBeTruthy();
     const btn = screen.getByTestId('show-evidence-btn-ai-test-1');
     expect(btn).toBeTruthy();
     expect((btn as HTMLButtonElement).disabled).toBe(false);

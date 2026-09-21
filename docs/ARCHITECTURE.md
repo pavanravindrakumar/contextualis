@@ -47,6 +47,8 @@ See `docs/adr/` for full ADRs.
 | PDF understanding | Gemini native document input | No OCR step, vision-based up to 1000 pages |
 | Schema enforcement | response_json_schema + Ajv | Structural guarantee stronger than prompt instruction |
 | evidence_status | Computed client-side | Model cannot reliably self-verify its own quotes |
+| Honest uncertainty | "Document Notes" UI | Explicitly surfaced `uncertainty_notes` keep verification status unpolluted |
+| In-memory caching | Session scoped `WeakMap<File, Map<string, AnalysisResult>>` | Reuses successfully completed analysis (keyed by role+concern) for the current File object without persistent storage |
 | PDF rendering/extraction | PDF.js (pinned, self-hosted worker) | Programmatic text access + geometry for highlighting |
 
 ## Repository Structure
@@ -90,7 +92,8 @@ contextualis/
         ├── 0002-no-database.md
         ├── 0003-dual-pipeline.md
         ├── 0004-tiered-evidence-matcher.md
-        └── 0005-schema-validation.md
+        ├── 0005-schema-validation.md
+        └── 0006-in-memory-context-switch-persistence.md
 ```
 
 ## Security Model

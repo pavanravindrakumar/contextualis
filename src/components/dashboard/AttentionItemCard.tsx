@@ -57,7 +57,7 @@ export function AttentionItemCard({ item, evidenceMatch, isActive: externalIsAct
   const canShowEvidence = displayStatus !== 'unverified';
 
   const evidenceBadgeLabel =
-    displayStatus === 'verified'         ? 'Verified' :
+    displayStatus === 'verified'         ? 'Source text verified' :
     displayStatus === 'approximate'      ? 'Approx. match' :
     displayStatus === 'multiple_matches' ? 'Multiple matches' :
     status === 'unverified_scanned'      ? 'Scanned PDF — text unavailable' :

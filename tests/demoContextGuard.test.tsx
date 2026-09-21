@@ -17,7 +17,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import { DemoProvider, UnsupportedDemoContextError, isSupportedDemoContext } from '../src/lib/providers/DemoProvider';
 import { GeminiProvider } from '../src/lib/providers/GeminiProvider';
 import { CONTEXT_A_DATA, CONTEXT_B_DATA } from '../src/lib/providers/demoData';
@@ -167,12 +167,12 @@ describe('ContextSelector — Accessible Error Alert', () => {
   });
 });
 
-describe('App Integration — Unsupported Context Guard in Demo Mode', () => {
+describe('App Integration — UI prevents unsupported Demo Contexts', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
   });
 
-  it('shows error alert and remains on context selection when unsupported context is submitted', async () => {
+  it('unsupported Demo combinations cannot be selected through the normal UI', async () => {
     // Mock demo fetch for clean-lease.pdf
     const dummyBlob = new Blob(['%PDF-1.4 mock content'], { type: 'application/pdf' });
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
@@ -188,61 +188,16 @@ describe('App Integration — Unsupported Context Guard in Demo Mode', () => {
     // Should be on context selection
     expect(screen.getByText(/Choose your demo context/i)).toBeTruthy();
 
-    // Select unsupported role: Employee
-    fireEvent.click(screen.getByTestId('role-chip-employee'));
-    // Select concern: Liability and Risk
-    fireEvent.click(screen.getByTestId('concern-chip-liability-risk'));
+    // Verify unsupported roles are not in the DOM
+    expect(screen.queryByTestId('role-chip-employee')).toBeNull();
+    expect(screen.queryByTestId('role-chip-employer')).toBeNull();
 
-    // Click Run Demo Analysis
-    fireEvent.click(screen.getByTestId('start-analysis-btn'));
+    // Verify supported roles are present
+    expect(screen.getByTestId('role-chip-small-business-tenant')).toBeTruthy();
+    expect(screen.getByTestId('role-chip-landlord')).toBeTruthy();
 
-    // Expect to remain on context selection with error alert
-    await waitFor(() => {
-      expect(screen.getByRole('alert')).toBeTruthy();
-      expect(screen.getByText(/Demo mode supports the Tenant and Landlord lenses for this document/i)).toBeTruthy();
-    });
-
-    // Dashboard must NOT be shown
-    expect(screen.queryByTestId('pdf-viewer')).toBeNull();
-    expect(screen.queryByText(/Attention Areas/i)).toBeNull();
-    // No findings rendered
-    expect(screen.queryByText(/Uncapped Operating Expenses/i)).toBeNull();
-    expect(screen.queryByText(/Strict Renewal Window/i)).toBeNull();
-    // Context selector should still be visible
-    expect(screen.getByText(/Choose your demo context/i)).toBeTruthy();
+    // Verify only appropriate concerns are available
+    expect(screen.getByTestId('concern-chip-financial-exposure')).toBeTruthy();
+    expect(screen.queryByTestId('concern-chip-liability-risk')).toBeNull();
   });
-
-  it('allows user to recover by selecting supported context and proceeding to dashboard', async () => {
-    const dummyBlob = new Blob(['%PDF-1.4 mock content'], { type: 'application/pdf' });
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-      ok: true,
-      blob: () => Promise.resolve(dummyBlob),
-    }));
-
-    render(<App />);
-
-    // Click "Explore Interactive Demo"
-    fireEvent.click(screen.getByTestId('explore-demo-btn'));
-
-    // Select unsupported role: Employee
-    fireEvent.click(screen.getByTestId('role-chip-employee'));
-    fireEvent.click(screen.getByTestId('start-analysis-btn'));
-
-    // Wait for error
-    await waitFor(() => {
-      expect(screen.getByRole('alert')).toBeTruthy();
-    });
-
-    // Recover: select Small Business Tenant + Financial Exposure
-    fireEvent.click(screen.getByTestId('role-chip-small-business-tenant'));
-    fireEvent.click(screen.getByTestId('concern-chip-financial-exposure'));
-    fireEvent.click(screen.getByTestId('start-analysis-btn'));
-
-    // Proceeds to dashboard
-    await waitFor(() => {
-      expect(screen.getByTestId('pdf-viewer')).toBeTruthy();
-      expect(screen.getByText(/Attention Areas/i)).toBeTruthy();
-      expect(screen.getByText(/Strict Late Fee Provision/i)).toBeTruthy();
-    }, { timeout: 4000 });
-  }, 10000);
 });

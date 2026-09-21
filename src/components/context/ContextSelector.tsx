@@ -21,8 +21,35 @@ export function ContextSelector({
   const [roleId, setRoleId] = useState<RoleId>(initialRoleId ?? ROLE_OPTIONS[0].id);
   const [concernId, setConcernId] = useState<ConcernId>(initialConcernId ?? CONCERN_OPTIONS[0].id);
 
-  const selectedRole = ROLE_OPTIONS.find(r => r.id === roleId)!;
-  const selectedConcern = CONCERN_OPTIONS.find(c => c.id === concernId)!;
+  // Derive effective state to enforce demo combinations without causing extra renders or lint warnings
+  let effectiveRoleId = roleId;
+  let effectiveConcernId = concernId;
+
+  if (isDemoMode) {
+    if (effectiveRoleId !== 'small-business-tenant' && effectiveRoleId !== 'landlord') {
+      effectiveRoleId = 'small-business-tenant';
+    }
+    if (effectiveRoleId === 'small-business-tenant') {
+      effectiveConcernId = 'financial-exposure';
+    } else if (effectiveRoleId === 'landlord') {
+      effectiveConcernId = 'exit-renewal';
+    }
+  }
+
+  const availableRoles = isDemoMode
+    ? ROLE_OPTIONS.filter(r => r.id === 'small-business-tenant' || r.id === 'landlord')
+    : ROLE_OPTIONS;
+
+  const availableConcerns = isDemoMode
+    ? CONCERN_OPTIONS.filter(c => {
+        if (effectiveRoleId === 'small-business-tenant') return c.id === 'financial-exposure';
+        if (effectiveRoleId === 'landlord') return c.id === 'exit-renewal';
+        return c.id === 'financial-exposure'; // fallback
+      })
+    : CONCERN_OPTIONS;
+
+  const selectedRole = ROLE_OPTIONS.find(r => r.id === effectiveRoleId) ?? ROLE_OPTIONS[0];
+  const selectedConcern = CONCERN_OPTIONS.find(c => c.id === effectiveConcernId) ?? CONCERN_OPTIONS[0];
 
   return (
     <div className={styles.page}>
@@ -63,7 +90,7 @@ export function ContextSelector({
         <section className={styles.section} aria-labelledby="role-heading">
           <h2 id="role-heading" className={styles.sectionLabel}>Your role</h2>
           <div className={styles.chipGroup} role="group" aria-labelledby="role-heading">
-            {ROLE_OPTIONS.map(r => (
+            {availableRoles.map(r => (
               <button
                 type="button"
                 key={r.id}
@@ -88,7 +115,7 @@ export function ContextSelector({
         <section className={styles.section} aria-labelledby="concern-heading">
           <h2 id="concern-heading" className={styles.sectionLabel}>Primary concern</h2>
           <div className={styles.chipGroup} role="group" aria-labelledby="concern-heading">
-            {CONCERN_OPTIONS.map(c => (
+            {availableConcerns.map(c => (
               <button
                 type="button"
                 key={c.id}
@@ -109,14 +136,14 @@ export function ContextSelector({
             aria-live="polite"
             aria-atomic="true"
           >
-            Analysing as: <strong>{selectedRole.label}</strong> · <strong>{selectedConcern.label}</strong>
+            Analysing as: <strong>{selectedRole.label}</strong> &middot; <strong>{selectedConcern.label}</strong>
           </p>
           <button
             type="button"
             id="start-analysis-btn"
             data-testid="start-analysis-btn"
             className="button-primary"
-            onClick={() => onStartAnalysis(roleId, concernId)}
+            onClick={() => onStartAnalysis(effectiveRoleId, effectiveConcernId)}
             style={{ padding: '0.75rem 2rem', fontSize: '1rem' }}
           >
             {isDemoMode ? 'Run Demo Analysis' : 'Analyze Document'}

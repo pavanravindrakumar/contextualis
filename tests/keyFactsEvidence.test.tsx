@@ -87,7 +87,7 @@ const mockAnalysis: AnalysisResult = {
 };
 
 describe('Key Facts Evidence Status Rendering in LeftPane', () => {
-  it('renders "Verified" badge and enables document navigation for verified facts', () => {
+  it('renders "Source text verified" badge and enables document navigation for verified facts', () => {
     const onEvidenceClick = vi.fn();
     const evidenceMap = {
       'kf-verified': {
@@ -108,7 +108,7 @@ describe('Key Facts Evidence Status Rendering in LeftPane', () => {
     );
 
     // Verified badge should be present
-    expect(screen.getByText('Verified')).toBeTruthy();
+    expect(screen.getByText('Source text verified')).toBeTruthy();
 
     // Document navigation button should be available
     const showBtn = screen.getByRole('button', { name: /Show in document for Base Rent/i });

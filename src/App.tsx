@@ -25,6 +25,8 @@ interface HighlightTarget {
   page: number;
 }
 
+const analysisCache = new WeakMap<File, Map<string, AnalysisResult>>();
+
 export default function App() {
   const [stage, setStage] = useState<AppStage>('landing');
   const [mode, setMode] = useState<Mode>('demo');
@@ -73,6 +75,8 @@ export default function App() {
 
     try {
       let base64 = '';
+      let cacheKey = '';
+
       if (mode === 'demo') {
         const response = await fetch('/demo/clean-lease.pdf');
         if (!response.ok) throw new Error('Failed to load demo asset.');
@@ -82,11 +86,30 @@ export default function App() {
         base64 = await fileToBase64(demoFile);
       } else {
         if (!file) throw new Error('No file selected.');
+        cacheKey = `${selectedRoleId}-${selectedConcernId}`;
+
+        const fileCache = analysisCache.get(file);
+        if (fileCache && fileCache.has(cacheKey)) {
+          setAnalysisResult(fileCache.get(cacheKey)!);
+          setStage('dashboard');
+          return;
+        }
+
         base64 = await fileToBase64(file);
       }
 
       if (!provider) throw new Error('AI Provider not initialized.');
       const result = await provider.analyze(base64, selectedRoleId, selectedConcernId);
+
+      if (mode === 'live' && file && cacheKey) {
+        let fileCache = analysisCache.get(file);
+        if (!fileCache) {
+          fileCache = new Map<string, AnalysisResult>();
+          analysisCache.set(file, fileCache);
+        }
+        fileCache.set(cacheKey, result.analysis);
+      }
+
       setAnalysisResult(result.analysis);
       setStage('dashboard');
     } catch (err) {

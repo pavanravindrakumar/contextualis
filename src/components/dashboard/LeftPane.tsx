@@ -59,7 +59,7 @@ export function LeftPane({ role, concern, analysisResult, evidenceMap, onSwitchC
                 const canShowEvidence = displayStatus !== 'unverified';
 
                 const badgeLabel =
-                  displayStatus === 'verified'         ? 'Verified' :
+                  displayStatus === 'verified'         ? 'Source text verified' :
                   displayStatus === 'approximate'      ? 'Approx. match' :
                   displayStatus === 'multiple_matches' ? 'Multiple matches' :
                   status === 'unverified_scanned'      ? 'Scanned PDF — text unavailable' :
@@ -155,6 +155,20 @@ export function LeftPane({ role, concern, analysisResult, evidenceMap, onSwitchC
                   </li>
                 );
               })}
+            </ul>
+          </section>
+        )}
+
+        {/* Uncertainty Notes */}
+        {analysisResult.uncertainty_notes && analysisResult.uncertainty_notes.length > 0 && (
+          <section className={styles.section} aria-labelledby="uncertainty-heading" data-testid="uncertainty-notes-section">
+            <h2 id="uncertainty-heading" className="text-label" style={{ marginBottom: 'var(--spacing-3)' }}>Document Notes</h2>
+            <ul className={styles.uncertaintyList} aria-labelledby="uncertainty-heading">
+              {analysisResult.uncertainty_notes.map((note, idx) => (
+                <li key={idx} className={styles.uncertaintyItem} data-testid={`uncertainty-note-${idx}`}>
+                  {note}
+                </li>
+              ))}
             </ul>
           </section>
         )}

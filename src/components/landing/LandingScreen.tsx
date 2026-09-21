@@ -116,7 +116,7 @@ export function LandingScreen({ onAnalyzeDocument, onExploreDemo, error }: Landi
             <div className={styles.evidenceMetaRow}>
               <div className={styles.evidenceItemRow}>
                 <span className="text-label">Status</span>
-                <span className="badge badge-verified">Verified</span>
+                <span className="badge badge-verified">Source text verified</span>
               </div>
               <div className={styles.evidenceItemRow}>
                 <span className="text-label">Location</span>

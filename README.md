@@ -39,8 +39,11 @@ cp .env.example .env
 npm run dev
 ```
 
-The app runs at `http://localhost:5173`. Without an API key, it runs in mock mode automatically.
+The app runs at `http://localhost:5173`. Without an API key, you can click "Explore Interactive Demo" to try it out. Note that **Demo Mode intentionally exposes only two prepared supported contexts**:
+- Small Business Tenant — Financial Exposure
+- Landlord — Exit / Renewal Obligations
 
+Live uploaded-document analysis (with an API key) supports the full broader role/concern selection.
 ---
 
 ## Architecture
@@ -49,6 +52,7 @@ See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design.
 
 **Key design decisions:**
 - **No database** — all state is ephemeral. Legal documents never leave your session.
+- **In-memory cache** — an ephemeral, session-scoped context cache optimizes repeated context switching on the same document without persistent storage.
 - **Dual pipeline** — Gemini analysis (server) and evidence verification (client-side PDF.js) are fully independent
 - **evidence_status is computed, not generated** — the model never self-certifies its own quotes
 - **Honest uncertainty** — unverified claims are shown, labelled, and never treated as verified

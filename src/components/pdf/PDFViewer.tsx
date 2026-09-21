@@ -35,6 +35,8 @@ export function PDFViewer({ file, targetPage, highlightTarget }: PDFViewerProps)
   const unscaledViewportRef = useRef<any>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const renderTaskRef = useRef<any>(null);
+  // Track the page number whose pixels are currently on the canvas
+  const renderedPageNumRef = useRef<number | null>(null);
 
   const [pdfDoc, setPdfDoc] = useState<PdfDocument>(null);
   const [currentPage, setCurrentPage] = useState(1);   // 1-indexed for display
@@ -101,6 +103,9 @@ export function PDFViewer({ file, targetPage, highlightTarget }: PDFViewerProps)
         renderTaskRef.current = null;
       }
 
+      renderedPageNumRef.current = null;
+      setRenderTick(t => t + 1); // trigger highlight clear
+
       const page: PdfPage = await doc.getPage(pageNum);
       currentPageRef.current = page;
       const containerWidth = (viewerAreaRef.current?.clientWidth ?? 700) - 32;
@@ -118,6 +123,7 @@ export function PDFViewer({ file, targetPage, highlightTarget }: PDFViewerProps)
 
       viewportRef.current = vp;
       unscaledViewportRef.current = unscaled;
+      renderedPageNumRef.current = pageNum;
       // Trigger the highlight overlay to redraw
       setRenderTick(t => t + 1);
     } catch (err: any) {
@@ -151,14 +157,17 @@ export function PDFViewer({ file, targetPage, highlightTarget }: PDFViewerProps)
   // ── Draw highlight overlay ────────────────────────────────────────────────
   useEffect(() => {
     const overlay = overlayRef.current;
-    const canvas = canvasRef.current;
-    const unscaledVp = unscaledViewportRef.current;
-    if (!overlay || !canvas || !unscaledVp) return;
+    if (!overlay) return;
 
-    // Clear existing highlights
+    // Clear existing highlights unconditionally first
     overlay.innerHTML = '';
 
-    if (!highlightTarget) return;
+    const canvas = canvasRef.current;
+    const unscaledVp = unscaledViewportRef.current;
+    if (!canvas || !unscaledVp || !highlightTarget) return;
+
+    // Ensure we only draw highlights if the canvas pixels match the current page
+    if (renderedPageNumRef.current !== currentPage) return;
 
     const spansOnPage = highlightTarget.spans.filter(
       (s: NormalizedSpan) => s.page === currentPage - 1

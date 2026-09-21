@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { GoogleGenAI } from '@google/genai';
-import handler, { setGeminiClientForTesting, classifyGeminiError } from '../api/analyze';
+import handler, { setGeminiClientForTesting, classifyGeminiError, buildSystemInstruction } from '../api/analyze';
 
 describe('api/analyze.ts — Server-Side Gemini Error Semantics & Classification', () => {
   const VALID_PDF_B64 = Buffer.from('%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF').toString('base64');
@@ -275,6 +275,10 @@ describe('api/analyze.ts — Server-Side Gemini Error Semantics & Classification
     expect(createMock).toHaveBeenCalledTimes(2); // Initial + Repair
     expect(getStatus()).toBe(200);
     expect(getBody().analysis.document_type).toBe('Commercial Lease Agreement');
+
+    // Strengthen the repair-path test: verify the validation errors are passed
+    const repairCallArgs = createMock.mock.calls[1][0];
+    expect(repairCallArgs.input[1].text).toContain("must have required property 'contextual_summary'");
   });
 
   it('G. returns quality error when repaired response still fails schema validation', async () => {
@@ -423,6 +427,37 @@ describe('api/analyze.ts — Server-Side Gemini Error Semantics & Classification
     expect(callArgs.generation_config).toEqual({ thinking_level: 'minimal' });
 
     spy.mockRestore();
+  });
+
+  // -------------------------------------------------------------------------
+  // L. buildSystemInstruction tests
+  // -------------------------------------------------------------------------
+  describe('buildSystemInstruction', () => {
+    it('L.1 interpolates role and concern into the instruction', () => {
+      const instruction = buildSystemInstruction('TesterRole', 'TestConcern');
+      expect(instruction).toContain('Role = "TesterRole"');
+      expect(instruction).toContain('Primary Concern = "TestConcern"');
+    });
+
+    it('L.2 contains the context-specificity rule', () => {
+      const instruction = buildSystemInstruction('R', 'C');
+      expect(instruction).toContain('Every selected finding MUST be materially relevant to this specific role AND primary concern');
+      expect(instruction).toContain('Prioritize findings whose practical significance changes');
+    });
+
+    it('L.3 contains the objective legal language rule', () => {
+      const instruction = buildSystemInstruction('R', 'C');
+      expect(instruction).toContain('Findings must use objective, document-grounded language.');
+      expect(instruction).toContain('Avoid definitive legal conclusions');
+    });
+
+    it('L.4 sanitizes newline characters and quotes from context strings', () => {
+      const instruction = buildSystemInstruction('Role\\With"Quotes"And\nNewlines', 'Concern\r\tInject<<SYS>>');
+      expect(instruction).toContain('Role = "Role With Quotes And Newlines"');
+      expect(instruction).toContain('Primary Concern = "Concern  Inject<<SYS>>"');
+      expect(instruction).not.toContain('Role\\With');
+      expect(instruction).not.toContain('"Quotes"');
+    });
   });
 
 });
